@@ -177,15 +177,21 @@ async def menu(message: types.Message):
         return
 
     keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📋 Открыть раздел",
-                    callback_data="open_section"
-                )
-            ]
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="📋 Открыть раздел",
+                callback_data="open_section"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📡 Частоты",
+                callback_data="frequencies"
+            )
         ]
-    )
+    ]
+)
 
     await message.answer(
         "Доступ открыт.\nВыберите раздел:",
@@ -212,6 +218,27 @@ async def open_section(call: CallbackQuery):
 
     await call.message.answer(
         "Раздел доступен."
+    )
+
+    await call.answer()
+    
+@dp.callback_query(F.data == "frequencies")
+async def frequencies(call: CallbackQuery):
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="1.2 GHz", callback_data="band_1.2GHz")],
+            [InlineKeyboardButton(text="1.5 GHz", callback_data="band_1.5GHz")],
+            [InlineKeyboardButton(text="2.4 GHz", callback_data="band_2.4GHz")],
+            [InlineKeyboardButton(text="3.3 GHz", callback_data="band_3.3GHz")],
+            [InlineKeyboardButton(text="3.7 GHz", callback_data="band_3.7GHz")],
+            [InlineKeyboardButton(text="5.8 GHz", callback_data="band_5.8GHz")]
+        ]
+    )
+
+    await call.message.answer(
+        "Выберите диапазон:",
+        reply_markup=keyboard
     )
 
     await call.answer()
