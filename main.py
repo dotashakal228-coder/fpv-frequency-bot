@@ -211,8 +211,29 @@ async def open_section(call: CallbackQuery):
     )
 
     await call.answer()
+async def health(request):
+    return web.Response(text="Bot is running")
+
+
 async def main():
     await init_db()
+
+    app = web.Application()
+    app.router.add_get("/", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.getenv("PORT", 10000))
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        port
+    )
+
+    await site.start()
+
     await dp.start_polling(bot)
 
 
