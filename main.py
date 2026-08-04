@@ -5,6 +5,7 @@ import aiosqlite
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 load_dotenv()
 
@@ -15,6 +16,8 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 DB = "users.db"
+
+temp_users = {}
 
 
 async def init_db():
@@ -35,73 +38,116 @@ async def init_db():
 @dp.message(CommandStart())
 async def start(message: types.Message):
     await message.answer(
-        "Заявка на доступ.\n\n"
+        "Для получения доступа заполните заявку.\n\n"
         "Введите ваш позывной:"
     )
-    await message.answer(
-        "После позывного напишите подразделение и должность."
-    )
-
-
-user_data = {}
 
 
 @dp.message(F.text)
-async def register(message: types.Message):
-    user_id = message.from_user.id
+async def form(message: types.Message):
+    uid = message.from_user.id
 
-    if user_id not in user_data:
-        user_data[user_id] = {
+    if uid not in temp_users:
+        temp_users[uid] = {
             "callsign": message.text
         }
-        await message.answer(
-            "Теперь укажите подразделение:"
-        )
+        await message.answer("Введите подразделение:")
         return
 
-    if "unit" not in user_data[user_id]:
-        user_data[user_id]["unit"] = message.text
-        await message.answer(
-            "Теперь укажите должность:"
-        )
+    if "unit" not in temp_users[uid]:
+        temp_users[uid]["unit"] = message.text
+        await message.answer("Введите должность:")
         return
 
-    if "position" not in user_data[user_id]:
-        user_data[user_id]["position"] = message.text
+    temp_users[uid]["position"] = message.text
 
-        data = user_data[user_id]
+    data = temp_users[uid]
 
-        async with aiosqlite.connect(DB) as db:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO users
-                (id, username, callsign, unit, position)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    user_id,
-                    message.from_user.username,
-                    data["callsign"],
-                    data["unit"],
-                    data["position"]
-                )
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO users
+            (id, username, callsign, unit, position)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                uid,
+                message.from_user.username,
+                data["callsign"],
+                data["unit"],
+                data["position"]
             )
-            await db.commit()
-
-        await message.answer(
-            "Заявка отправлена. Ожидайте подтверждения."
         )
+        await db.commit()
 
-        await bot.send_message(
-            ADMIN_ID,
-            f"Новая заявка:\n\n"
-            f"ID: {user_id}\n"
-            f"Позывной: {data['callsign']}\n"
-            f"Подразделение: {data['unit']}\n"
-            f"Должность: {data['position']}"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Одобрить",
+                    callback_data=f"approve_{uid}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"reject_{uid}"
+                )
+            ]
+        ]
+    )
+
+    await bot.send_message(
+        ADMIN_ID,
+        f"Новая заявка:\n\n"
+        f"ID: {uid}\n"
+        f"Позывной: {data['callsign']}\n"
+        f"Подразделение: {data['unit']}\n"
+        f"Должность: {data['position']}",
+        reply_markup=keyboard
+    )
+
+    await message.answer(
+        "Заявка отправлена администратору. Ожидайте решения."
+    )
+
+    del temp_users[uid]
+
+
+@dp.callback_query(F.data.startswith("approve_"))
+async def approve(call: CallbackQuery):
+    uid = int(call.data.split("_")[1])
+
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "UPDATE users SET status='approved' WHERE id=?",
+            (uid,)
         )
+        await db.commit()
 
-        del user_data[user_id]
+    await bot.send_message(
+        uid,
+        "✅ Ваша заявка одобрена. Доступ открыт."
+    )
+
+    await call.answer("Одобрено")
+
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject(call: CallbackQuery):
+    uid = int(call.data.split("_")[1])
+
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "UPDATE users SET status='rejected' WHERE id=?",
+            (uid,)
+        )
+        await db.commit()
+
+    await bot.send_message(
+        uid,
+        "❌ Ваша заявка отклонена."
+    )
+
+    await call.answer("Отклонено")
 
 
 async def main():
