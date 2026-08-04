@@ -149,7 +149,68 @@ async def reject(call: CallbackQuery):
 
     await call.answer("Отклонено")
 
+@dp.message(Command("menu"))
+async def menu(message: types.Message):
+    uid = message.from_user.id
 
+    async with aiosqlite.connect(DB) as db:
+        cursor = await db.execute(
+            "SELECT status FROM users WHERE id=?",
+            (uid,)
+        )
+        user = await cursor.fetchone()
+
+    if not user:
+        await message.answer(
+            "Вы ещё не подавали заявку."
+        )
+        return
+
+    if user[0] != "approved":
+        await message.answer(
+            "Ваша заявка ещё не одобрена."
+        )
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📋 Открыть раздел",
+                    callback_data="open_section"
+                )
+            ]
+        ]
+    )
+
+    await message.answer(
+        "Доступ открыт.\nВыберите раздел:",
+        reply_markup=keyboard
+    )
+
+
+@dp.callback_query(F.data == "open_section")
+async def open_section(call: CallbackQuery):
+    uid = call.from_user.id
+
+    async with aiosqlite.connect(DB) as db:
+        cursor = await db.execute(
+            "SELECT status FROM users WHERE id=?",
+            (uid,)
+        )
+        user = await cursor.fetchone()
+
+    if not user or user[0] != "approved":
+        await call.message.answer(
+            "Нет доступа."
+        )
+        return
+
+    await call.message.answer(
+        "Раздел доступен."
+    )
+
+    await call.answer()
 async def main():
     await init_db()
     await dp.start_polling(bot)
