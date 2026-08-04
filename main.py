@@ -47,10 +47,8 @@ async def start(message: types.Message):
     )
 
 
-@dp.message(F.text)
+@dp.message(F.text & ~F.text.startswith("/"))
 async def form(message: types.Message):
-    if message.text.startswith("/"):
-        return
 
     uid = message.from_user.id
 
