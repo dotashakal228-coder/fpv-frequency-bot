@@ -49,6 +49,9 @@ async def start(message: types.Message):
 
 @dp.message(F.text)
 async def form(message: types.Message):
+    if message.text.startswith("/"):
+        return
+
     uid = message.from_user.id
 
     if uid not in temp_users:
