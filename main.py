@@ -1,3 +1,4 @@
+import json
 import asyncio
 import os
 import aiosqlite
@@ -17,6 +18,8 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 DB = "users.db"
+with open("frequencies.json", "r", encoding="utf-8") as f:
+    FREQUENCIES = json.load(f)
 
 temp_users = {}
 
