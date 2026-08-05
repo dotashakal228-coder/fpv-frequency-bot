@@ -315,6 +315,46 @@ async def show_band(call: CallbackQuery):
     )
 
     await call.answer()
+@dp.callback_query(F.data.startswith("take_"))
+async def take_channel(call: CallbackQuery):
+    uid = call.from_user.id
+    channel_id = int(call.data.replace("take_", ""))
+
+    async with aiosqlite.connect(DB) as db:
+
+        # Проверяем, не занят ли уже канал пользователем
+        cursor = await db.execute(
+            "SELECT channel, frequency FROM channels WHERE owner=?",
+            (uid,)
+        )
+        busy = await cursor.fetchone()
+
+        if busy:
+            await call.message.answer(
+                f"❌ У вас уже занят канал {busy[0]} ({busy[1]} MHz).\n"
+                "Сначала освободите его."
+            )
+            await call.answer()
+            return
+
+        # Занимаем выбранный канал
+        await db.execute(
+            "UPDATE channels SET owner=? WHERE id=? AND owner IS NULL",
+            (uid, channel_id)
+        )
+        await db.commit()
+
+        cursor = await db.execute(
+            "SELECT channel, frequency FROM channels WHERE id=?",
+            (channel_id,)
+        )
+        ch = await cursor.fetchone()
+
+    await call.message.answer(
+        f"✅ Канал {ch[0]} ({ch[1]} MHz) успешно занят."
+    )
+
+    await call.answer()
 async def health(request):
     return web.Response(text="Bot is running")
 
