@@ -386,10 +386,9 @@ async def take_channel(call: CallbackQuery):
     )
 
     await call.answer()
-    async def auto_release():
-      while True:
-        async with 
-    aiosqlite.connect(DB) as db:
+async def auto_release():
+    while True:
+        async with aiosqlite.connect(DB) as db:
             now = int(time.time())
 
             await db.execute(
