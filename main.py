@@ -192,7 +192,35 @@ async def reject(call: CallbackQuery):
     )
 
     await call.answer("Отклонено")
+@dp.message(Command("users"))
+async def users_list(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
 
+    async with aiosqlite.connect(DB) as db:
+        cursor = await db.execute("""
+            SELECT id, callsign, unit, position, status
+            FROM users
+            ORDER BY callsign
+        """)
+        users = await cursor.fetchall()
+
+    if not users:
+        await message.answer("📭 Пользователей нет.")
+        return
+
+    text = "👥 Список пользователей:\n\n"
+
+    for uid, callsign, unit, position, status in users:
+        text += (
+            f"🆔 {uid}\n"
+            f"📛 {callsign}\n"
+            f"🏢 {unit}\n"
+            f"🎖 {position}\n"
+            f"📌 {status}\n\n"
+        )
+
+    await message.answer(text)
 @dp.message(Command("menu"))
 async def menu(message: types.Message):
     uid = message.from_user.id
