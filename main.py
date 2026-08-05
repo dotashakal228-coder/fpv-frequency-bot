@@ -36,6 +36,17 @@ async def init_db():
             status TEXT DEFAULT 'pending'
         )
         """)
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS channels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            band TEXT,
+            channel TEXT,
+            frequency INTEGER,
+            owner INTEGER DEFAULT NULL
+        )
+        """)
+
         await db.commit()
 
 
