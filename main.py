@@ -47,13 +47,16 @@ async def init_db():
             owner INTEGER DEFAULT NULL
         )
         """)
-        try:
-    await db.execute(
-        "ALTER TABLE channels ADD COLUMN expires_at INTEGER"
-    )
-except aiosqlite.OperationalError:
-    pass
+ 
         await db.commit()
+        
+        try:
+            await db.execute(
+                "ALTER TABLE channels ADD COLUMN expires_at INTEGER"
+            )
+        except aiosqlite.OperationalError:
+            pass
+            
         cursor = await db.execute("SELECT COUNT(*) FROM channels")
         count = (await cursor.fetchone())[0]
 
