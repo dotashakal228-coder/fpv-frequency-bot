@@ -386,12 +386,33 @@ async def take_channel(call: CallbackQuery):
     )
 
     await call.answer()
+    async def auto_release():
+    while True:
+        async with aiosqlite.connect(DB) as db:
+            now = int(time.time())
+
+            await db.execute(
+                """
+                UPDATE channels
+                SET owner = NULL,
+                    expires_at = NULL
+                WHERE expires_at IS NOT NULL
+                AND expires_at <= ?
+                """,
+                (now,)
+            )
+
+            await db.commit()
+
+        await asyncio.sleep(60)
 async def health(request):
     return web.Response(text="Bot is running")
 
 
 async def main():
     await init_db()
+
+    asyncio.create_task(auto_release())
 
     app = web.Application()
     app.router.add_get("/", health)
