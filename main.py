@@ -1,3 +1,4 @@
+import time
 import json
 import asyncio
 import os
@@ -46,7 +47,12 @@ async def init_db():
             owner INTEGER DEFAULT NULL
         )
         """)
-
+        try:
+    await db.execute(
+        "ALTER TABLE channels ADD COLUMN expires_at INTEGER"
+    )
+except aiosqlite.OperationalError:
+    pass
         await db.commit()
         cursor = await db.execute("SELECT COUNT(*) FROM channels")
         count = (await cursor.fetchone())[0]
@@ -342,14 +348,16 @@ async def take_channel(call: CallbackQuery):
             return
 
         # Пытаемся занять канал
+        expire = int(time.time()) + 3600
+
         cursor = await db.execute(
             """
             UPDATE channels
-            SET owner=?
+            SET owner=?, expires_at=?
             WHERE id=? AND owner IS NULL
             """,
-            (uid, channel_id)
-        )
+            (uid, expire, channel_id)
+       )
 
         # Если канал уже успел занять другой человек
         if cursor.rowcount == 0:
