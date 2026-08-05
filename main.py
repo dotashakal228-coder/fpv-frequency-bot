@@ -243,6 +243,27 @@ async def frequencies(call: CallbackQuery):
     )
 
     await call.answer()
+    @dp.callback_query(F.data.startswith("band_"))
+async def show_band(call: CallbackQuery):
+    band = call.data.replace("band_", "")
+
+    if band not in FREQUENCIES:
+        await call.message.answer("Диапазон не найден.")
+        await call.answer()
+        return
+
+    text = f"📡 {band}\n\n"
+
+    for group, channels in FREQUENCIES[band].items():
+        text += f"🔹 {group}\n"
+
+        for ch, freq in channels.items():
+            text += f"{ch}: {freq} MHz\n"
+
+        text += "\n"
+
+    await call.message.answer(text)
+    await call.answer()
 async def health(request):
     return web.Response(text="Bot is running")
 
