@@ -323,9 +323,15 @@ async def menu(message: types.Message):
                 text="📡 Частоты",
                 callback_data="frequencies"
             )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📍 Мой канал",
+                callback_data="my_channel"
+            )
         ]
     ]
-)
+    )
 
     await message.answer(
         "Доступ открыт.\nВыберите раздел:",
@@ -480,6 +486,51 @@ async def take_channel(call: CallbackQuery):
     )
 
     await call.answer()
+@dp.callback_query(F.data == "my_channel")
+async def my_channel(call: CallbackQuery):
+    uid = call.from_user.id
+
+    async with aiosqlite.connect(DB) as db:
+        cursor = await db.execute(
+            """
+            SELECT band, channel, frequency, expires_at
+            FROM channels
+            WHERE owner=?
+            """,
+            (uid,)
+        )
+
+        row = await cursor.fetchone()
+
+    if not row:
+        await call.message.answer("❌ У вас нет занятого канала.")
+        await call.answer()
+        return
+
+    band, channel, frequency, expires_at = row
+
+    if expires_at:
+        left = expires_at - int(time.time())
+
+        if left < 0:
+            left = 0
+
+        minutes = left // 60
+        seconds = left % 60
+
+        timer = f"{minutes} мин {seconds} сек"
+    else:
+        timer = "∞"
+
+    await call.message.answer(
+        f"📍 Ваш канал:\n\n"
+        f"📡 Диапазон: {band}\n"
+        f"🎯 Канал: {channel}\n"
+        f"📶 Частота: {frequency} MHz\n"
+        f"⏳ Осталось: {timer}"
+    )
+
+    await call.answer()    
 async def auto_release():
     while True:
         async with aiosqlite.connect(DB) as db:
