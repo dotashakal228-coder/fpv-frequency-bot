@@ -117,77 +117,111 @@ async def start(message: types.Message):
         "Введите ваш позывной:"
     )
 
-
 @dp.message(F.text & ~F.text.startswith("/"))
 async def form(message: types.Message):
-
     uid = message.from_user.id
-
-    if uid not in temp_users:
-        temp_users[uid] = {
-            "callsign": message.text
-        }
-        await message.answer("Введите подразделение:")
-        return
-
-    if "unit" not in temp_users[uid]:
-        temp_users[uid]["unit"] = message.text
-        await message.answer("Введите должность:")
-        return
-
-    temp_users[uid]["position"] = message.text
-
-    data = temp_users[uid]
+    text = message.text.strip()
 
     async with aiosqlite.connect(DB) as db:
-        await db.execute(
+
+        cursor = await db.execute(
             """
-            INSERT OR REPLACE INTO users
-            (id, username, callsign, unit, position)
-            VALUES (?, ?, ?, ?, ?)
+            SELECT callsign, unit, position, status
+            FROM users
+            WHERE id=?
             """,
-            (
-                uid,
-                message.from_user.username,
-                data["callsign"],
-                data["unit"],
-                data["position"]
-            )
+            (uid,)
         )
-        await db.commit()
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Одобрить",
-                    callback_data=f"approve_{uid}"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отклонить",
-                    callback_data=f"reject_{uid}"
+        user = await cursor.fetchone()
+
+        if user:
+            callsign, unit, position, status = user
+
+            if status == "approved":
+                return
+
+            if callsign is None:
+                await db.execute(
+                    "UPDATE users SET callsign=? WHERE id=?",
+                    (text, uid)
                 )
-            ]
-        ]
-    )
+                await db.commit()
 
-    await bot.send_message(
-        ADMIN_ID,
-        f"Новая заявка:\n\n"
-        f"ID: {uid}\n"
-        f"Позывной: {data['callsign']}\n"
-        f"Подразделение: {data['unit']}\n"
-        f"Должность: {data['position']}",
-        reply_markup=keyboard
-    )
+                await message.answer("Введите подразделение:")
+                return
 
-    await message.answer(
-        "Заявка отправлена администратору. Ожидайте решения."
-    )
+            if unit is None:
+                await db.execute(
+                    "UPDATE users SET unit=? WHERE id=?",
+                    (text, uid)
+                )
+                await db.commit()
 
-    del temp_users[uid]
+                await message.answer("Введите должность:")
+                return
 
+            if position is None:
+                await db.execute(
+                    """
+                    UPDATE users
+                    SET position=?
+                    WHERE id=?
+                    """,
+                    (text, uid)
+                )
+                await db.commit()
 
+                keyboard = InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="✅ Одобрить",
+                                callback_data=f"approve_{uid}"
+                            ),
+                            InlineKeyboardButton(
+                                text="❌ Отклонить",
+                                callback_data=f"reject_{uid}"
+                            )
+                        ]
+                    ]
+                )
+
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"Новая заявка:\n\n"
+                    f"ID: {uid}\n"
+                    f"Позывной: {callsign}\n"
+                    f"Подразделение: {unit}\n"
+                    f"Должность: {text}",
+                    reply_markup=keyboard
+                )
+
+                await message.answer(
+                    "✅ Заявка отправлена администратору."
+                )
+
+                return
+
+        else:
+            await db.execute(
+                """
+                INSERT INTO users
+                (id, username, callsign, status)
+                VALUES (?, ?, ?, 'pending')
+                """,
+                (
+                    uid,
+                    message.from_user.username,
+                    text
+                )
+            )
+
+            await db.commit()
+
+            await message.answer(
+                "Введите подразделение:"
+            )
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve(call: CallbackQuery):
     uid = int(call.data.split("_")[1])
