@@ -322,36 +322,56 @@ async def take_channel(call: CallbackQuery):
 
     async with aiosqlite.connect(DB) as db:
 
-        # Проверяем, не занят ли уже канал пользователем
+        # Проверяем, есть ли уже занятый канал
         cursor = await db.execute(
-            "SELECT channel, frequency FROM channels WHERE owner=?",
+            """
+            SELECT band, channel, frequency
+            FROM channels
+            WHERE owner=?
+            """,
             (uid,)
         )
         busy = await cursor.fetchone()
 
         if busy:
             await call.message.answer(
-                f"❌ У вас уже занят канал {busy[0]} ({busy[1]} MHz).\n"
+                f"❌ У вас уже занят канал {busy[0]} {busy[1]} ({busy[2]} MHz).\n"
                 "Сначала освободите его."
             )
             await call.answer()
             return
 
-        # Занимаем выбранный канал
-        await db.execute(
-            "UPDATE channels SET owner=? WHERE id=? AND owner IS NULL",
+        # Пытаемся занять канал
+        cursor = await db.execute(
+            """
+            UPDATE channels
+            SET owner=?
+            WHERE id=? AND owner IS NULL
+            """,
             (uid, channel_id)
         )
+
+        # Если канал уже успел занять другой человек
+        if cursor.rowcount == 0:
+            await call.message.answer("❌ Этот канал уже занят.")
+            await call.answer()
+            return
+
         await db.commit()
 
         cursor = await db.execute(
-            "SELECT channel, frequency FROM channels WHERE id=?",
+            """
+            SELECT band, channel, frequency
+            FROM channels
+            WHERE id=?
+            """,
             (channel_id,)
         )
+
         ch = await cursor.fetchone()
 
     await call.message.answer(
-        f"✅ Канал {ch[0]} ({ch[1]} MHz) успешно занят."
+        f"✅ Вы заняли канал:\n{ch[0]} • {ch[1]} • {ch[2]} MHz"
     )
 
     await call.answer()
