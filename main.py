@@ -110,7 +110,8 @@ async def start(message: types.Message):
                 "❌ Ваша заявка была отклонена."
             )
         return
-
+    temp_users[uid] = {}
+    
     await message.answer(
         "Для получения доступа заполните заявку.\n\n"
         "Введите ваш позывной:"
