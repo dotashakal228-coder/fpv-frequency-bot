@@ -56,7 +56,14 @@ async def init_db():
             )
         except aiosqlite.OperationalError:
             pass
-            
+        try:
+            await db.execute(
+        "ALTER TABLE users ADD COLUMN step TEXT DEFAULT 'done'"
+            )
+        except aiosqlite.OperationalError:
+            pass
+
+        await db.commit()    
         cursor = await db.execute("SELECT COUNT(*) FROM channels")
         count = (await cursor.fetchone())[0]
 
@@ -80,6 +87,30 @@ async def init_db():
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
+    uid = message.from_user.id
+
+    async with aiosqlite.connect(DB) as db:
+        cursor = await db.execute(
+            "SELECT status FROM users WHERE id=?",
+            (uid,)
+        )
+        user = await cursor.fetchone()
+
+    if user:
+        if user[0] == "approved":
+            await message.answer(
+                "✅ Вы уже зарегистрированы.\nИспользуйте /menu."
+            )
+        elif user[0] == "pending":
+            await message.answer(
+                "⏳ Ваша заявка уже отправлена и ожидает проверки."
+            )
+        elif user[0] == "rejected":
+            await message.answer(
+                "❌ Ваша заявка была отклонена."
+            )
+        return
+
     await message.answer(
         "Для получения доступа заполните заявку.\n\n"
         "Введите ваш позывной:"
