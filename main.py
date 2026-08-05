@@ -243,7 +243,7 @@ async def frequencies(call: CallbackQuery):
     )
 
     await call.answer()
-    @dp.callback_query(F.data.startswith("band_"))
+@dp.callback_query(F.data.startswith("band_"))
 async def show_band(call: CallbackQuery):
     band = call.data.replace("band_", "")
 
