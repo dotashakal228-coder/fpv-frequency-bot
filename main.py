@@ -387,8 +387,9 @@ async def take_channel(call: CallbackQuery):
 
     await call.answer()
     async def auto_release():
-    while True:
-        async with aiosqlite.connect(DB) as db:
+      while True:
+        async with 
+    aiosqlite.connect(DB) as db:
             now = int(time.time())
 
             await db.execute(
@@ -396,7 +397,8 @@ async def take_channel(call: CallbackQuery):
                 UPDATE channels
                 SET owner = NULL,
                     expires_at = NULL
-                WHERE expires_at IS NOT NULL
+                WHERE expires_at IS 
+        NOT NULL
                 AND expires_at <= ?
                 """,
                 (now,)
