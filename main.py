@@ -258,6 +258,46 @@ async def frequencies(call: CallbackQuery):
 async def show_band(call: CallbackQuery):
     band = call.data.replace("band_", "")
 
+    keyboard = []
+
+    async with aiosqlite.connect(DB) as db:
+        cursor = await db.execute(
+            """
+            SELECT id, channel, frequency
+            FROM channels
+            WHERE band=? AND owner IS NULL
+            ORDER BY frequency
+            """,
+            (band,)
+        )
+
+        rows = await cursor.fetchall()
+
+    if not rows:
+        await call.message.answer(
+            "❌ В этом диапазоне свободных каналов нет."
+        )
+        await call.answer()
+        return
+
+    for row in rows:
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"{row[1]} • {row[2]} MHz",
+                callback_data=f"take_{row[0]}"
+            )
+        ])
+
+    await call.message.answer(
+        f"📡 Свободые каналы диапазона {band}:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=keyboard
+        )
+    )
+
+    await call.answer()
+    band = call.data.replace("band_", "")
+
     if band not in FREQUENCIES:
         await call.message.answer("Диапазон не найден.")
         await call.answer()
