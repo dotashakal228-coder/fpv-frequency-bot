@@ -449,14 +449,15 @@ async def show_band(call: CallbackQuery):
             inline_keyboard=keyboard
         )
     )
-    await call.answer(
+    await call.answer()
         
- @dp.callback_query(F.data == "occupied")
+@dp.callback_query(F.data == "occupied")
 async def occupied(call: CallbackQuery):
     await call.answer(
         "🔴 Этот канал уже занят.",
         show_alert=True
-    )   
+    ) 
+    
 @dp.callback_query(F.data.startswith("take_"))
 async def take_channel(call: CallbackQuery):
     uid = call.from_user.id
