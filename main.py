@@ -522,15 +522,54 @@ async def my_channel(call: CallbackQuery):
     else:
         timer = "∞"
 
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Освободить канал",
+                    callback_data="release_channel"
+                )
+            ]
+        ]
+    )
+
     await call.message.answer(
         f"📍 Ваш канал:\n\n"
         f"📡 Диапазон: {band}\n"
         f"🎯 Канал: {channel}\n"
         f"📶 Частота: {frequency} MHz\n"
-        f"⏳ Осталось: {timer}"
+        f"⏳ Осталось: {timer}",
+        reply_markup=keyboard
     )
 
-    await call.answer()    
+    await call.answer()
+@dp.callback_query(F.data == "release_channel")
+async def release_channel(call: CallbackQuery):
+    uid = call.from_user.id
+
+    async with aiosqlite.connect(DB) as db:
+        cursor = await db.execute(
+            """
+            UPDATE channels
+            SET owner = NULL,
+                expires_at = NULL
+            WHERE owner = ?
+            """,
+            (uid,)
+        )
+
+        await db.commit()
+
+        if cursor.rowcount == 0:
+            await call.message.answer(
+                "❌ У вас нет занятого канала."
+            )
+        else:
+            await call.message.answer(
+                "✅ Канал успешно освобождён."
+            )
+
+    await call.answer()
 async def auto_release():
     while True:
         async with aiosqlite.connect(DB) as db:
