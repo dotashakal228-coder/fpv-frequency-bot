@@ -391,9 +391,9 @@ async def show_band(call: CallbackQuery):
     async with aiosqlite.connect(DB) as db:
         cursor = await db.execute(
             """
-            SELECT id, channel, frequency
+            SELECT id, channel, frequency, owner, expires_at
             FROM channels
-            WHERE band=? AND owner IS NULL
+            WHERE band=?
             ORDER BY frequency
             """,
             (band,)
@@ -403,27 +403,60 @@ async def show_band(call: CallbackQuery):
 
     if not rows:
         await call.message.answer(
-            "❌ В этом диапазоне свободных каналов нет."
+            "❌ В этом диапазоне каналов нет."
         )
         await call.answer()
         return
 
-    for row in rows:
-        keyboard.append([
-            InlineKeyboardButton(
-                text=f"{row[1]} • {row[2]} MHz",
-                callback_data=f"take_{row[0]}"
-            )
-        ])
+    for channel_id, channel, frequency, owner, expires_at in rows:
+
+        # Свободный канал
+        if owner is None:
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🟢 {channel} • {frequency} MHz",
+                    callback_data=f"take_{channel_id}"
+                )
+            ])
+
+        # Занятый канал
+        else:
+            if expires_at:
+                left = expires_at - int(time.time())
+
+                if left < 0:
+                    left = 0
+
+                minutes = left // 60
+                seconds = left % 60
+
+                timer = f"{minutes} мин {seconds} сек"
+            else:
+                timer = "∞"
+
+            keyboard.append([
+                InlineKeyboardButton(
+                    text=f"🔴 {channel} • {frequency} MHz • {timer}",
+                    callback_data="occupied"
+                )
+            ])
 
     await call.message.answer(
-        f"📡 Свободые каналы диапазона {band}:",
+        f"📡 Каналы диапазона {band}:\n\n"
+        "🟢 — свободен\n"
+        "🔴 — занят",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=keyboard
         )
     )
-
-    await call.answer()
+    await call.answer(
+        
+ @dp.callback_query(F.data == "occupied")
+async def occupied(call: CallbackQuery):
+    await call.answer(
+        "🔴 Этот канал уже занят.",
+        show_alert=True
+    )   
 @dp.callback_query(F.data.startswith("take_"))
 async def take_channel(call: CallbackQuery):
     uid = call.from_user.id
