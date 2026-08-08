@@ -38,7 +38,7 @@ with open("frequencies.json", "r", encoding="utf-8") as f:
 
 
 # =========================================================
-# НИЖНЯЯ КНОПКА МЕНЮ
+# НИЖНЕЕ МЕНЮ
 # =========================================================
 
 def main_menu_keyboard():
@@ -54,81 +54,69 @@ def main_menu_keyboard():
 
 
 # =========================================================
-# ГЛАВНОЕ INLINE-МЕНЮ
+# ГЛАВНОЕ МЕНЮ
 # =========================================================
 
-def inline_main_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+def inline_main_menu(uid=None):
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text="📡 Частоты",
+                callback_data="frequencies"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📍 Мой канал",
+                callback_data="my_channel"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📖 Инструкция",
+                callback_data="instructions"
+            )
+        ]
+    ]
+
+    if uid == ADMIN_ID:
+        buttons.append(
             [
                 InlineKeyboardButton(
-                    text="📡 Частоты",
-                    callback_data="frequencies"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📍 Мой канал",
-                    callback_data="my_channel"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="📋 Открыть раздел",
-                    callback_data="open_section"
+                    text="⚙️ Админ-панель",
+                    callback_data="admin_panel"
                 )
             ]
-        ]
+        )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=buttons
     )
 
 
 # =========================================================
-# ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ
+# ПРИВЕТСТВЕННАЯ ИНСТРУКЦИЯ
 # =========================================================
 
 WELCOME_TEXT = (
     "👋 <b>Добро пожаловать!</b>\n\n"
-    "Вы получили доступ к системе выбора и бронирования каналов.\n\n"
-
-    "📌 <b>Как пользоваться ботом:</b>\n\n"
-
-    "1️⃣ Нажмите <b>☰ Меню</b>.\n\n"
-
-    "2️⃣ Откройте раздел <b>📡 Частоты</b> "
-    "и выберите нужный диапазон.\n\n"
-
-    "3️⃣ 🟢 <b>Зелёный канал</b> — свободен, "
-    "его можно занять.\n\n"
-
-    "4️⃣ Нажмите на свободный канал и выберите, "
-    "на какое время вы хотите его занять.\n\n"
-
-    "Доступное время:\n"
-    "• 15 минут\n"
-    "• 30 минут\n"
-    "• 1 час\n"
-    "• 2 часа\n"
-    "• 4 часа\n"
-    "• 8 часов\n\n"
-
-    "5️⃣ После бронирования канал становится 🔴 занятым. "
-    "Другие пользователи увидят позывной владельца "
-    "и оставшееся время.\n\n"
-
-    "6️⃣ В разделе <b>📍 Мой канал</b> можно посмотреть "
-    "свой канал и освободить его раньше окончания срока.\n\n"
-
-    "⚠️ <b>Важно:</b>\n"
-    "• Один пилот может одновременно занимать только один канал.\n"
-    "• Не занимайте канал без необходимости.\n"
-    "• После завершения работы освобождайте канал.\n"
-    "• После окончания выбранного времени канал "
-    "автоматически освобождается.\n\n"
-
-    "📡 Перед использованием убедитесь, что выбранный "
-    "канал соответствует вашему оборудованию.\n\n"
-
-    "🚁 <b>Удачной работы!</b>"
+    "Этот бот предназначен для управления доступом к каналам.\n\n"
+    "<b>Как пользоваться:</b>\n\n"
+    "1️⃣ Пройдите регистрацию:\n"
+    "• позывной\n"
+    "• подразделение\n"
+    "• должность\n\n"
+    "2️⃣ Дождитесь проверки администратора.\n\n"
+    "3️⃣ После одобрения нажмите <b>☰ Меню</b>.\n\n"
+    "4️⃣ Откройте <b>📡 Частоты</b> и выберите нужный диапазон.\n\n"
+    "5️⃣ Выберите свободный канал 🟢.\n\n"
+    "6️⃣ Укажите, на какой срок хотите его занять.\n\n"
+    "7️⃣ Занятые каналы отображаются как 🔴.\n"
+    "У них видно позывной пользователя и оставшееся время.\n\n"
+    "📍 В разделе <b>Мой канал</b> можно посмотреть свой канал "
+    "и освободить его раньше окончания срока.\n\n"
+    "⚠️ Один пользователь одновременно может занимать только один канал."
 )
 
 
@@ -165,7 +153,10 @@ async def init_db():
 
         await db.commit()
 
-        # Для старой базы
+        # -------------------------------------------------
+        # Совместимость со старой БД
+        # -------------------------------------------------
+
         try:
             await db.execute(
                 "ALTER TABLE users ADD COLUMN step TEXT DEFAULT 'callsign'"
@@ -182,7 +173,11 @@ async def init_db():
 
         await db.commit()
 
-        # Восстанавливаем правильный этап регистрации
+        # -------------------------------------------------
+        # Определяем этап регистрации существующих
+        # пользователей
+        # -------------------------------------------------
+
         await db.execute("""
             UPDATE users
             SET step='callsign'
@@ -214,7 +209,10 @@ async def init_db():
 
         await db.commit()
 
-        # Заполняем каналы только один раз
+        # -------------------------------------------------
+        # Заполнение каналов
+        # -------------------------------------------------
+
         cursor = await db.execute(
             "SELECT COUNT(*) FROM channels"
         )
@@ -232,7 +230,13 @@ async def init_db():
                         await db.execute(
                             """
                             INSERT INTO channels
-                            (band, channel, frequency, owner, expires_at)
+                            (
+                                band,
+                                channel,
+                                frequency,
+                                owner,
+                                expires_at
+                            )
                             VALUES (?, ?, ?, NULL, NULL)
                             """,
                             (
@@ -255,8 +259,14 @@ async def get_user(uid):
 
         cursor = await db.execute(
             """
-            SELECT id, username, callsign,
-                   unit, position, status, step
+            SELECT
+                id,
+                username,
+                callsign,
+                unit,
+                position,
+                status,
+                step
             FROM users
             WHERE id=?
             """,
@@ -267,21 +277,15 @@ async def get_user(uid):
 
 
 # =========================================================
-# ПРОВЕРКА ДОСТУПА
+# ПРОВЕРКА АДМИНА
 # =========================================================
 
-async def is_approved(uid):
-
-    user = await get_user(uid)
-
-    if not user:
-        return False
-
-    return user[5] == "approved"
+def is_admin(uid):
+    return uid == ADMIN_ID
 
 
 # =========================================================
-# ОСВОБОЖДЕНИЕ ПРОСРОЧЕННЫХ КАНАЛОВ
+# ОСВОБОЖДЕНИЕ ПРОСРОЧЕННЫХ
 # =========================================================
 
 async def release_expired_channels():
@@ -318,24 +322,41 @@ def format_time_left(expires_at):
     if left <= 0:
         return "истёк"
 
-    minutes = left // 60
+    hours = left // 3600
+    minutes = (left % 3600) // 60
     seconds = left % 60
 
-    hours = minutes // 60
-    minutes = minutes % 60
-
     if hours > 0:
-
         if minutes > 0:
             return f"{hours} ч {minutes} мин"
 
         return f"{hours} ч"
 
-    return f"{minutes} мин {seconds} сек"
+    if minutes > 0:
+        return f"{minutes} мин"
+
+    return f"{seconds} сек"
 
 
 # =========================================================
-# ВЫБОР ВРЕМЕНИ
+# ТЕКСТ ДЛИТЕЛЬНОСТИ
+# =========================================================
+
+def duration_text(minutes):
+
+    if minutes < 60:
+        return f"{minutes} минут"
+
+    hours = minutes // 60
+
+    if hours == 1:
+        return "1 час"
+
+    return f"{hours} часа"
+
+
+# =========================================================
+# ВЫБОР СРОКА
 # =========================================================
 
 def duration_keyboard(channel_id):
@@ -383,7 +404,7 @@ def duration_keyboard(channel_id):
 
 
 # =========================================================
-# /START
+# START
 # =========================================================
 
 @dp.message(CommandStart())
@@ -404,7 +425,12 @@ async def start(message: types.Message):
             await db.execute(
                 """
                 INSERT INTO users
-                (id, username, status, step)
+                (
+                    id,
+                    username,
+                    status,
+                    step
+                )
                 VALUES (?, ?, 'pending', 'callsign')
                 """,
                 (
@@ -416,8 +442,12 @@ async def start(message: types.Message):
             await db.commit()
 
         await message.answer(
-            "👋 Добро пожаловать!\n\n"
-            "Для получения доступа необходимо пройти регистрацию.\n\n"
+            WELCOME_TEXT,
+            reply_markup=main_menu_keyboard()
+        )
+
+        await message.answer(
+            "📝 <b>Начнём регистрацию.</b>\n\n"
             "Введите ваш позывной:",
             reply_markup=main_menu_keyboard()
         )
@@ -428,13 +458,13 @@ async def start(message: types.Message):
     step = user[6]
 
     # -----------------------------------------------------
-    # НЕ ЗАКОНЧЕНА РЕГИСТРАЦИЯ
+    # НЕЗАКОНЧЕННАЯ РЕГИСТРАЦИЯ
     # -----------------------------------------------------
 
     if step == "callsign":
 
         await message.answer(
-            "Введите ваш позывной:",
+            "📝 Введите ваш позывной:",
             reply_markup=main_menu_keyboard()
         )
 
@@ -443,7 +473,7 @@ async def start(message: types.Message):
     if step == "unit":
 
         await message.answer(
-            "Введите подразделение:",
+            "🏢 Введите подразделение:",
             reply_markup=main_menu_keyboard()
         )
 
@@ -452,7 +482,7 @@ async def start(message: types.Message):
     if step == "position":
 
         await message.answer(
-            "Введите должность:",
+            "🎖 Введите должность:",
             reply_markup=main_menu_keyboard()
         )
 
@@ -492,18 +522,19 @@ async def start(message: types.Message):
     if status == "approved":
 
         await message.answer(
-            "📋 Главное меню:",
+            "📋 <b>Главное меню</b>\n\n"
+            "Выберите нужный раздел:",
             reply_markup=main_menu_keyboard()
         )
 
         await message.answer(
-            "Выберите нужный раздел:",
-            reply_markup=inline_main_menu()
+            "Выберите действие:",
+            reply_markup=inline_main_menu(uid)
         )
 
 
 # =========================================================
-# КНОПКА ☰ МЕНЮ
+# КНОПКА МЕНЮ
 # =========================================================
 
 @dp.message(F.text == "☰ Меню")
@@ -520,29 +551,25 @@ async def menu_button(message: types.Message):
     status = user[5]
     step = user[6]
 
-    # Если регистрация ещё идёт — не сбиваем её
     if step == "callsign":
 
         await message.answer(
-            "📝 Сначала введите ваш позывной."
+            "📝 Введите ваш позывной."
         )
-
         return
 
     if step == "unit":
 
         await message.answer(
-            "📝 Сначала введите подразделение."
+            "🏢 Введите подразделение."
         )
-
         return
 
     if step == "position":
 
         await message.answer(
-            "📝 Сначала введите должность."
+            "🎖 Введите должность."
         )
-
         return
 
     if status == "pending":
@@ -550,7 +577,6 @@ async def menu_button(message: types.Message):
         await message.answer(
             "⏳ Ваша заявка ещё находится на проверке."
         )
-
         return
 
     if status == "rejected":
@@ -558,12 +584,11 @@ async def menu_button(message: types.Message):
         await message.answer(
             "❌ Ваша заявка была отклонена."
         )
-
         return
 
     await message.answer(
-        "📋 Главное меню:",
-        reply_markup=inline_main_menu()
+        "📋 <b>Главное меню</b>",
+        reply_markup=inline_main_menu(uid)
     )
 
 
@@ -591,17 +616,22 @@ async def registration(message: types.Message):
     status = user[5]
     step = user[6]
 
-    # Уже одобрен
+    # -----------------------------------------------------
+    # УЖЕ ОДОБРЕН
+    # -----------------------------------------------------
+
     if status == "approved":
 
         await message.answer(
-            "📋 Используйте кнопку «☰ Меню» для навигации.",
-            reply_markup=main_menu_keyboard()
+            "📋 Используйте кнопку «☰ Меню»."
         )
 
         return
 
-    # Заявка уже отправлена
+    # -----------------------------------------------------
+    # ЗАЯВКА УЖЕ ОТПРАВЛЕНА
+    # -----------------------------------------------------
+
     if status == "pending" and step == "done":
 
         await message.answer(
@@ -634,7 +664,7 @@ async def registration(message: types.Message):
             await db.commit()
 
         await message.answer(
-            "Введите подразделение:"
+            "🏢 Введите подразделение:"
         )
 
         return
@@ -663,7 +693,7 @@ async def registration(message: types.Message):
             await db.commit()
 
         await message.answer(
-            "Введите должность:"
+            "🎖 Введите должность:"
         )
 
         return
@@ -737,13 +767,13 @@ async def registration(message: types.Message):
 
 
 # =========================================================
-# ОДОБРИТЬ
+# ОДОБРЕНИЕ
 # =========================================================
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve(call: CallbackQuery):
 
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
 
         await call.answer(
             "Нет доступа.",
@@ -770,20 +800,12 @@ async def approve(call: CallbackQuery):
 
         await db.commit()
 
-    # Приветствие после одобрения
     await bot.send_message(
         uid,
-        WELCOME_TEXT,
-        parse_mode="HTML",
+        "✅ <b>Ваша заявка одобрена!</b>\n\n"
+        "Доступ открыт.\n"
+        "Для работы используйте кнопку ☰ Меню.",
         reply_markup=main_menu_keyboard()
-    )
-
-    await bot.send_message(
-        uid,
-        "📋 <b>Главное меню</b>\n\n"
-        "Выберите нужный раздел:",
-        parse_mode="HTML",
-        reply_markup=inline_main_menu()
     )
 
     await call.message.edit_reply_markup(
@@ -794,13 +816,13 @@ async def approve(call: CallbackQuery):
 
 
 # =========================================================
-# ОТКЛОНИТЬ
+# ОТКЛОНЕНИЕ
 # =========================================================
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject(call: CallbackQuery):
 
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
 
         await call.answer(
             "Нет доступа.",
@@ -840,104 +862,29 @@ async def reject(call: CallbackQuery):
 
 
 # =========================================================
-# /USERS
+# ИНСТРУКЦИЯ
 # =========================================================
 
-@dp.message(Command("users"))
-async def users_list(message: types.Message):
-
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
-            """
-            SELECT id, username, callsign,
-                   unit, position, status
-            FROM users
-            ORDER BY callsign
-            """
-        )
-
-        users = await cursor.fetchall()
-
-    if not users:
-
-        await message.answer(
-            "📭 Пользователей нет."
-        )
-
-        return
-
-    text = "👥 <b>Пользователи:</b>\n\n"
-
-    for (
-        uid,
-        username,
-        callsign,
-        unit,
-        position,
-        status
-    ) in users:
-
-        text += (
-            f"🆔 {uid}\n"
-            f"👤 @{username or 'нет'}\n"
-            f"📛 {callsign or '—'}\n"
-            f"🏢 {unit or '—'}\n"
-            f"🎖 {position or '—'}\n"
-            f"📌 {status}\n\n"
-        )
-
-    await message.answer(
-        text,
-        parse_mode="HTML"
-    )
-
-
-# =========================================================
-# НАЗАД В МЕНЮ
-# =========================================================
-
-@dp.callback_query(F.data == "back_menu")
-async def back_menu(call: CallbackQuery):
-
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
+@dp.callback_query(F.data == "instructions")
+async def instructions(call: CallbackQuery):
 
     await call.message.answer(
-        "📋 Главное меню:",
-        reply_markup=inline_main_menu()
+        WELCOME_TEXT
     )
 
     await call.answer()
 
 
 # =========================================================
-# ОТКРЫТЬ РАЗДЕЛ
+# ГЛАВНОЕ МЕНЮ INLINE
 # =========================================================
 
-@dp.callback_query(F.data == "open_section")
-async def open_section(call: CallbackQuery):
-
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
+@dp.callback_query(F.data == "back_menu")
+async def back_menu(call: CallbackQuery):
 
     await call.message.answer(
-        "📋 Раздел доступен."
+        "📋 <b>Главное меню</b>",
+        reply_markup=inline_main_menu(call.from_user.id)
     )
 
     await call.answer()
@@ -949,15 +896,6 @@ async def open_section(call: CallbackQuery):
 
 @dp.callback_query(F.data == "frequencies")
 async def frequencies(call: CallbackQuery):
-
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1008,7 +946,6 @@ async def frequencies(call: CallbackQuery):
 
     await call.message.answer(
         "📡 <b>Выберите диапазон:</b>",
-        parse_mode="HTML",
         reply_markup=keyboard
     )
 
@@ -1016,20 +953,11 @@ async def frequencies(call: CallbackQuery):
 
 
 # =========================================================
-# ПОКАЗАТЬ КАНАЛЫ
+# КАНАЛЫ ДИАПАЗОНА
 # =========================================================
 
 @dp.callback_query(F.data.startswith("band_"))
 async def show_band(call: CallbackQuery):
-
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
 
     await release_expired_channels()
 
@@ -1072,6 +1000,10 @@ async def show_band(call: CallbackQuery):
 
         return
 
+    # -----------------------------------------------------
+    # КНОПКИ КАНАЛОВ
+    # -----------------------------------------------------
+
     for (
         channel_id,
         channel,
@@ -1097,19 +1029,30 @@ async def show_band(call: CallbackQuery):
 
         else:
 
-            timer = format_time_left(
-                expires_at
-            )
-
             pilot = callsign or "неизвестен"
+            timer = format_time_left(expires_at)
 
+            # Короткая первая строка,
+            # чтобы Telegram не обрезал время
             keyboard.append(
                 [
                     InlineKeyboardButton(
                         text=(
                             f"🔴 {channel} • "
-                            f"{frequency} MHz\n"
-                            f"👤 {pilot} • ⏳ {timer}"
+                            f"{frequency} MHz"
+                        ),
+                        callback_data="occupied"
+                    )
+                ]
+            )
+
+            # Отдельная строка с позывным и временем
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=(
+                            f"👤 {pilot}  •  "
+                            f"⏳ {timer}"
                         ),
                         callback_data="occupied"
                     )
@@ -1135,11 +1078,11 @@ async def show_band(call: CallbackQuery):
     )
 
     await call.message.answer(
-        f"📡 <b>Каналы диапазона {band}:</b>\n\n"
+        f"📡 <b>Каналы диапазона {band}</b>\n\n"
         "🟢 — свободен\n"
         "🔴 — занят\n"
-        "👤 — позывной пилота",
-        parse_mode="HTML",
+        "👤 — позывной\n"
+        "⏳ — оставшееся время",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=keyboard
         )
@@ -1162,20 +1105,11 @@ async def occupied(call: CallbackQuery):
 
 
 # =========================================================
-# НАЖАТИЕ НА СВОБОДНЫЙ КАНАЛ
+# ВЫБОР КАНАЛА
 # =========================================================
 
 @dp.callback_query(F.data.startswith("take_"))
 async def take_channel(call: CallbackQuery):
-
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
 
     uid = call.from_user.id
 
@@ -1188,13 +1122,19 @@ async def take_channel(call: CallbackQuery):
 
     await release_expired_channels()
 
-    # Проверяем текущий канал пользователя
+    # -----------------------------------------------------
+    # Проверяем существующий канал
+    # -----------------------------------------------------
+
     async with aiosqlite.connect(DB) as db:
 
         cursor = await db.execute(
             """
-            SELECT band, channel,
-                   frequency, expires_at
+            SELECT
+                band,
+                channel,
+                frequency,
+                expires_at
             FROM channels
             WHERE owner=?
             """,
@@ -1205,31 +1145,32 @@ async def take_channel(call: CallbackQuery):
 
     if busy:
 
-        timer = format_time_left(
-            busy[3]
-        )
-
         await call.message.answer(
             "❌ <b>У вас уже занят канал.</b>\n\n"
-            f"📡 Диапазон: {busy[0]}\n"
-            f"🎯 Канал: {busy[1]}\n"
-            f"📶 Частота: {busy[2]} MHz\n"
-            f"⏳ Осталось: {timer}\n\n"
-            "Сначала освободите текущий канал.",
-            parse_mode="HTML"
+            f"📡 {busy[0]}\n"
+            f"🎯 {busy[1]}\n"
+            f"📶 {busy[2]} MHz\n"
+            f"⏳ Осталось: {format_time_left(busy[3])}\n\n"
+            "Сначала освободите текущий канал."
         )
 
         await call.answer()
 
         return
 
+    # -----------------------------------------------------
     # Получаем выбранный канал
+    # -----------------------------------------------------
+
     async with aiosqlite.connect(DB) as db:
 
         cursor = await db.execute(
             """
-            SELECT band, channel,
-                   frequency, owner
+            SELECT
+                band,
+                channel,
+                frequency,
+                owner
             FROM channels
             WHERE id=?
             """,
@@ -1256,12 +1197,10 @@ async def take_channel(call: CallbackQuery):
 
         return
 
-    # Выбор времени
     await call.message.answer(
-        f"📡 Канал: {channel[1]}\n"
-        f"📶 Частота: {channel[2]} MHz\n\n"
+        f"📡 <b>Канал:</b> {channel[1]}\n"
+        f"📶 <b>Частота:</b> {channel[2]} MHz\n\n"
         "⏳ <b>На сколько времени занять канал?</b>",
-        parse_mode="HTML",
         reply_markup=duration_keyboard(channel_id)
     )
 
@@ -1275,15 +1214,6 @@ async def take_channel(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("duration_"))
 async def choose_duration(call: CallbackQuery):
 
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
-
     uid = call.from_user.id
 
     parts = call.data.split("_")
@@ -1293,13 +1223,19 @@ async def choose_duration(call: CallbackQuery):
 
     await release_expired_channels()
 
+    # -----------------------------------------------------
+    # Проверяем существующий канал пользователя
+    # -----------------------------------------------------
+
     async with aiosqlite.connect(DB) as db:
 
-        # Проверяем существующий канал
         cursor = await db.execute(
             """
-            SELECT band, channel,
-                   frequency, expires_at
+            SELECT
+                band,
+                channel,
+                frequency,
+                expires_at
             FROM channels
             WHERE owner=?
             """,
@@ -1310,23 +1246,21 @@ async def choose_duration(call: CallbackQuery):
 
         if busy:
 
-            timer = format_time_left(
-                busy[3]
-            )
-
             await call.message.answer(
                 "❌ <b>У вас уже занят канал.</b>\n\n"
                 f"📡 {busy[0]} • {busy[1]}\n"
                 f"📶 {busy[2]} MHz\n"
-                f"⏳ Осталось: {timer}",
-                parse_mode="HTML"
+                f"⏳ Осталось: {format_time_left(busy[3])}"
             )
 
             await call.answer()
 
             return
 
-        # Пытаемся занять канал
+        # -------------------------------------------------
+        # Атомарно занимаем канал
+        # -------------------------------------------------
+
         expire = int(time.time()) + minutes * 60
 
         cursor = await db.execute(
@@ -1359,8 +1293,11 @@ async def choose_duration(call: CallbackQuery):
 
         cursor = await db.execute(
             """
-            SELECT band, channel,
-                   frequency, expires_at
+            SELECT
+                band,
+                channel,
+                frequency,
+                expires_at
             FROM channels
             WHERE id=?
             """,
@@ -1382,27 +1319,15 @@ async def choose_duration(call: CallbackQuery):
 
     callsign = user[0] if user else "неизвестен"
 
-    if minutes < 60:
-
-        duration_text = f"{minutes} минут"
-
-    else:
-
-        hours = minutes // 60
-
-        if hours == 1:
-            duration_text = "1 час"
-        else:
-            duration_text = f"{hours} часа"
-
     await call.message.answer(
         "✅ <b>Канал успешно занят!</b>\n\n"
         f"📡 Диапазон: {ch[0]}\n"
         f"🎯 Канал: {ch[1]}\n"
         f"📶 Частота: {ch[2]} MHz\n"
         f"👤 Позывной: {callsign}\n"
-        f"⏳ Срок: {duration_text}",
-        parse_mode="HTML"
+        f"⏳ Срок: {duration_text(minutes)}\n\n"
+        "Освободить канал раньше можно через "
+        "📍 <b>Мой канал</b>."
     )
 
     await call.answer(
@@ -1416,15 +1341,6 @@ async def choose_duration(call: CallbackQuery):
 
 @dp.callback_query(F.data == "my_channel")
 async def my_channel(call: CallbackQuery):
-
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
 
     uid = call.from_user.id
 
@@ -1468,10 +1384,6 @@ async def my_channel(call: CallbackQuery):
         callsign
     ) = row
 
-    timer = format_time_left(
-        expires_at
-    )
-
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -1482,7 +1394,7 @@ async def my_channel(call: CallbackQuery):
             ],
             [
                 InlineKeyboardButton(
-                    text="📡 Частоты",
+                    text="📡 К этому диапазону",
                     callback_data=f"band_{band}"
                 )
             ],
@@ -1496,13 +1408,12 @@ async def my_channel(call: CallbackQuery):
     )
 
     await call.message.answer(
-        "📍 <b>Ваш канал:</b>\n\n"
+        "📍 <b>Ваш канал</b>\n\n"
         f"📡 Диапазон: {band}\n"
         f"🎯 Канал: {channel}\n"
         f"📶 Частота: {frequency} MHz\n"
         f"👤 Позывной: {callsign or '—'}\n"
-        f"⏳ Осталось: {timer}",
-        parse_mode="HTML",
+        f"⏳ Осталось: {format_time_left(expires_at)}",
         reply_markup=keyboard
     )
 
@@ -1510,20 +1421,11 @@ async def my_channel(call: CallbackQuery):
 
 
 # =========================================================
-# ОСВОБОДИТЬ КАНАЛ
+# ОСВОБОДИТЬ СВОЙ КАНАЛ
 # =========================================================
 
 @dp.callback_query(F.data == "release_channel")
 async def release_channel(call: CallbackQuery):
-
-    if not await is_approved(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
 
     uid = call.from_user.id
 
@@ -1559,6 +1461,599 @@ async def release_channel(call: CallbackQuery):
 
 
 # =========================================================
+# =========================================================
+# АДМИН-ПАНЕЛЬ
+# =========================================================
+# =========================================================
+
+def admin_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👥 Пользователи",
+                    callback_data="admin_users"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📡 Занятые каналы",
+                    callback_data="admin_channels"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 Обновить",
+                    callback_data="admin_panel"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Главное меню",
+                    callback_data="back_menu"
+                )
+            ]
+        ]
+    )
+
+
+# =========================================================
+# ОТКРЫТЬ АДМИН-ПАНЕЛЬ
+# =========================================================
+
+@dp.callback_query(F.data == "admin_panel")
+async def admin_panel(call: CallbackQuery):
+
+    if not is_admin(call.from_user.id):
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    await release_expired_channels()
+
+    async with aiosqlite.connect(DB) as db:
+
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM users"
+        )
+
+        total_users = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+            FROM users
+            WHERE status='approved'
+            """
+        )
+
+        approved_users = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+            FROM channels
+            WHERE owner IS NOT NULL
+            """
+        )
+
+        occupied = (await cursor.fetchone())[0]
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+            FROM channels
+            WHERE owner IS NULL
+            """
+        )
+
+        free = (await cursor.fetchone())[0]
+
+    await call.message.answer(
+        "⚙️ <b>АДМИН-ПАНЕЛЬ</b>\n\n"
+        f"👥 Всего пользователей: {total_users}\n"
+        f"✅ Одобрено: {approved_users}\n"
+        f"🔴 Занято каналов: {occupied}\n"
+        f"🟢 Свободно каналов: {free}\n\n"
+        "Выберите действие:",
+        reply_markup=admin_keyboard()
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# ПОЛЬЗОВАТЕЛИ АДМИНА
+# =========================================================
+
+@dp.callback_query(F.data == "admin_users")
+async def admin_users(call: CallbackQuery):
+
+    if not is_admin(call.from_user.id):
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    async with aiosqlite.connect(DB) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT
+                id,
+                username,
+                callsign,
+                unit,
+                position,
+                status
+            FROM users
+            ORDER BY callsign
+            """
+        )
+
+        users = await cursor.fetchall()
+
+    if not users:
+
+        await call.message.answer(
+            "📭 Пользователей нет.",
+            reply_markup=admin_keyboard()
+        )
+
+        await call.answer()
+
+        return
+
+    text = "👥 <b>ПОЛЬЗОВАТЕЛИ</b>\n\n"
+
+    for (
+        uid,
+        username,
+        callsign,
+        unit,
+        position,
+        status
+    ) in users:
+
+        if status == "approved":
+            status_text = "✅ одобрен"
+        elif status == "pending":
+            status_text = "⏳ ожидает"
+        else:
+            status_text = "❌ отклонён"
+
+        text += (
+            f"🆔 {uid}\n"
+            f"👤 @{username or 'нет'}\n"
+            f"📛 {callsign or '—'}\n"
+            f"🏢 {unit or '—'}\n"
+            f"🎖 {position or '—'}\n"
+            f"📌 {status_text}\n\n"
+        )
+
+    # Telegram имеет ограничение длины сообщения
+    if len(text) > 3900:
+        text = text[:3900] + "\n\n…"
+
+    await call.message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ Админ-панель",
+                        callback_data="admin_panel"
+                    )
+                ]
+            ]
+        )
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# ЗАНЯТЫЕ КАНАЛЫ ДЛЯ АДМИНА
+# =========================================================
+
+@dp.callback_query(F.data == "admin_channels")
+async def admin_channels(call: CallbackQuery):
+
+    if not is_admin(call.from_user.id):
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    await release_expired_channels()
+
+    async with aiosqlite.connect(DB) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT
+                channels.id,
+                channels.band,
+                channels.channel,
+                channels.frequency,
+                channels.expires_at,
+                users.callsign
+            FROM channels
+            LEFT JOIN users
+                ON channels.owner = users.id
+            WHERE channels.owner IS NOT NULL
+            ORDER BY channels.band,
+                     channels.frequency
+            """
+        )
+
+        rows = await cursor.fetchall()
+
+    if not rows:
+
+        await call.message.answer(
+            "📡 Сейчас занятых каналов нет.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Админ-панель",
+                            callback_data="admin_panel"
+                        )
+                    ]
+                ]
+            )
+        )
+
+        await call.answer()
+
+        return
+
+    keyboard = []
+
+    for (
+        channel_id,
+        band,
+        channel,
+        frequency,
+        expires_at,
+        callsign
+    ) in rows:
+
+        pilot = callsign or "неизвестен"
+        timer = format_time_left(expires_at)
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"🔴 {channel} • "
+                        f"{frequency} MHz"
+                    ),
+                    callback_data=f"admin_ch_{channel_id}"
+                )
+            ]
+        )
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"👤 {pilot} • "
+                        f"⏳ {timer}"
+                    ),
+                    callback_data=f"admin_ch_{channel_id}"
+                )
+            ]
+        )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Админ-панель",
+                callback_data="admin_panel"
+            )
+        ]
+    )
+
+    await call.message.answer(
+        "📡 <b>ЗАНЯТЫЕ КАНАЛЫ</b>\n\n"
+        "Нажмите на нужный канал для управления:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=keyboard
+        )
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# КАРТОЧКА КАНАЛА АДМИНА
+# =========================================================
+
+@dp.callback_query(F.data.startswith("admin_ch_"))
+async def admin_channel_card(call: CallbackQuery):
+
+    if not is_admin(call.from_user.id):
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    channel_id = int(
+        call.data.replace(
+            "admin_ch_",
+            ""
+        )
+    )
+
+    await release_expired_channels()
+
+    async with aiosqlite.connect(DB) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT
+                channels.band,
+                channels.channel,
+                channels.frequency,
+                channels.expires_at,
+                channels.owner,
+                users.callsign,
+                users.unit,
+                users.position
+            FROM channels
+            LEFT JOIN users
+                ON channels.owner = users.id
+            WHERE channels.id=?
+            """,
+            (channel_id,)
+        )
+
+        row = await cursor.fetchone()
+
+    if not row:
+
+        await call.answer(
+            "Канал не найден.",
+            show_alert=True
+        )
+
+        return
+
+    (
+        band,
+        channel,
+        frequency,
+        expires_at,
+        owner,
+        callsign,
+        unit,
+        position
+    ) = row
+
+    if owner is None:
+
+        await call.message.answer(
+            "🟢 Этот канал уже свободен.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="⬅️ Занятые каналы",
+                            callback_data="admin_channels"
+                        )
+                    ]
+                ]
+            )
+        )
+
+        await call.answer()
+
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Принудительно освободить",
+                    callback_data=f"admin_release_{channel_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Занятые каналы",
+                    callback_data="admin_channels"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⚙️ Админ-панель",
+                    callback_data="admin_panel"
+                )
+            ]
+        ]
+    )
+
+    await call.message.answer(
+        "📡 <b>КАНАЛ</b>\n\n"
+        f"📡 Диапазон: {band}\n"
+        f"🎯 Канал: {channel}\n"
+        f"📶 Частота: {frequency} MHz\n\n"
+        f"👤 Позывной: {callsign or '—'}\n"
+        f"🏢 Подразделение: {unit or '—'}\n"
+        f"🎖 Должность: {position or '—'}\n"
+        f"🆔 ID пользователя: {owner}\n\n"
+        f"⏳ Осталось: {format_time_left(expires_at)}",
+        reply_markup=keyboard
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# ПРИНУДИТЕЛЬНОЕ ОСВОБОЖДЕНИЕ АДМИНОМ
+# =========================================================
+
+@dp.callback_query(F.data.startswith("admin_release_"))
+async def admin_release_channel(call: CallbackQuery):
+
+    if not is_admin(call.from_user.id):
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    channel_id = int(
+        call.data.replace(
+            "admin_release_",
+            ""
+        )
+    )
+
+    async with aiosqlite.connect(DB) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT
+                owner,
+                channel,
+                frequency
+            FROM channels
+            WHERE id=?
+            """,
+            (channel_id,)
+        )
+
+        channel = await cursor.fetchone()
+
+        if not channel:
+
+            await call.answer(
+                "Канал не найден.",
+                show_alert=True
+            )
+
+            return
+
+        owner = channel[0]
+
+        await db.execute(
+            """
+            UPDATE channels
+            SET owner=NULL,
+                expires_at=NULL
+            WHERE id=?
+            """,
+            (channel_id,)
+        )
+
+        await db.commit()
+
+    # Сообщаем владельцу
+    if owner:
+
+        try:
+
+            await bot.send_message(
+                owner,
+                "⚠️ <b>Ваш канал был освобождён администратором.</b>\n\n"
+                f"🎯 Канал: {channel[1]}\n"
+                f"📶 Частота: {channel[2]} MHz"
+            )
+
+        except Exception as e:
+
+            print(
+                f"Не удалось уведомить пользователя {owner}: {e}"
+            )
+
+    await call.message.answer(
+        "✅ Канал принудительно освобождён."
+    )
+
+    await call.answer(
+        "Канал освобождён"
+    )
+
+
+# =========================================================
+# /USERS — СТАРАЯ КОМАНДА
+# =========================================================
+
+@dp.message(Command("users"))
+async def users_command(message: types.Message):
+
+    if not is_admin(message.from_user.id):
+        return
+
+    async with aiosqlite.connect(DB) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT
+                id,
+                username,
+                callsign,
+                unit,
+                position,
+                status
+            FROM users
+            ORDER BY callsign
+            """
+        )
+
+        users = await cursor.fetchall()
+
+    if not users:
+
+        await message.answer(
+            "📭 Пользователей нет."
+        )
+
+        return
+
+    text = "👥 <b>Пользователи:</b>\n\n"
+
+    for (
+        uid,
+        username,
+        callsign,
+        unit,
+        position,
+        status
+    ) in users:
+
+        text += (
+            f"🆔 {uid}\n"
+            f"👤 @{username or 'нет'}\n"
+            f"📛 {callsign or '—'}\n"
+            f"🏢 {unit or '—'}\n"
+            f"🎖 {position or '—'}\n"
+            f"📌 {status}\n\n"
+        )
+
+    await message.answer(text)
+
+
+# =========================================================
 # АВТООСВОБОЖДЕНИЕ
 # =========================================================
 
@@ -1567,6 +2062,7 @@ async def auto_release():
     while True:
 
         try:
+
             await release_expired_channels()
 
         except Exception as e:
@@ -1595,7 +2091,7 @@ async def setup_bot_commands():
         ),
         BotCommand(
             command="users",
-            description="Список пользователей"
+            description="Пользователи — администратор"
         )
     ]
 
@@ -1639,7 +2135,10 @@ async def main():
         auto_release()
     )
 
-    # Web-сервер Render
+    # -----------------------------------------------------
+    # Web-сервер для Render
+    # -----------------------------------------------------
+
     app = web.Application()
 
     app.router.add_get(
