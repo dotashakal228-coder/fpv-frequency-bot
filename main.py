@@ -2,6 +2,8 @@ import time
 import json
 import asyncio
 import os
+
+import asyncpg
 import aiosqlite
 
 from aiohttp import web
@@ -27,18 +29,25 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not BOT_TOKEN:
+    raise RuntimeError("Не найден BOT_TOKEN")
+
+if not DATABASE_URL:
+    raise RuntimeError("Не найден DATABASE_URL")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-DB = "users.db"
+DB_POOL = None
 
 with open("frequencies.json", "r", encoding="utf-8") as f:
     FREQUENCIES = json.load(f)
 
 
 # =========================================================
-# КНОПКА НИЖНЕГО МЕНЮ
+# КЛАВИАТУРА НИЖНЕГО МЕНЮ
 # =========================================================
 
 def main_menu_keyboard():
@@ -58,24 +67,57 @@ def main_menu_keyboard():
 # =========================================================
 
 def inline_main_menu():
+
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text="📡 Частоты",
+                callback_data="frequencies"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📍 Мой канал",
+                callback_data="my_channel"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📋 Инструкция",
+                callback_data="instructions"
+            )
+        ]
+    ]
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=buttons
+    )
+
+
+# =========================================================
+# МЕНЮ АДМИНИСТРАТОРА
+# =========================================================
+
+def admin_menu_keyboard():
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📡 Частоты",
-                    callback_data="frequencies"
+                    text="👥 Пользователи",
+                    callback_data="admin_users"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📍 Мой канал",
-                    callback_data="my_channel"
+                    text="📡 Занятые каналы",
+                    callback_data="admin_channels"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📋 Открыть раздел",
-                    callback_data="open_section"
+                    text="📋 Главное меню",
+                    callback_data="back_menu"
                 )
             ]
         ]
@@ -83,16 +125,33 @@ def inline_main_menu():
 
 
 # =========================================================
-# БАЗА ДАННЫХ
+# ПОДКЛЮЧЕНИЕ К POSTGRESQL
+# =========================================================
+
+async def connect_db():
+
+    global DB_POOL
+
+    DB_POOL = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=5
+    )
+
+    print("PostgreSQL подключён")
+
+
+# =========================================================
+# СОЗДАНИЕ ТАБЛИЦ
 # =========================================================
 
 async def init_db():
 
-    async with aiosqlite.connect(DB) as db:
+    async with DB_POOL.acquire() as db:
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
+                id BIGINT PRIMARY KEY,
                 username TEXT,
                 callsign TEXT,
                 unit TEXT,
@@ -104,104 +163,181 @@ async def init_db():
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS channels (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                band TEXT,
-                channel TEXT,
-                frequency INTEGER,
-                owner INTEGER DEFAULT NULL,
-                expires_at INTEGER DEFAULT NULL
+                id INTEGER PRIMARY KEY,
+                band TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                frequency INTEGER NOT NULL,
+                owner BIGINT DEFAULT NULL,
+                expires_at BIGINT DEFAULT NULL
             )
         """)
 
-        await db.commit()
-
-        # -----------------------------------------------------
-        # Совместимость со старой базой
-        # -----------------------------------------------------
-
-        try:
-            await db.execute(
-                "ALTER TABLE users ADD COLUMN step TEXT DEFAULT 'callsign'"
-            )
-        except aiosqlite.OperationalError:
-            pass
-
-        try:
-            await db.execute(
-                "ALTER TABLE channels ADD COLUMN expires_at INTEGER"
-            )
-        except aiosqlite.OperationalError:
-            pass
-
-        await db.commit()
-
-        # -----------------------------------------------------
-        # Определяем этап старых пользователей
-        # -----------------------------------------------------
-
         await db.execute("""
-            UPDATE users
-            SET step='callsign'
-            WHERE callsign IS NULL
+            CREATE INDEX IF NOT EXISTS idx_channels_owner
+            ON channels(owner)
         """)
 
         await db.execute("""
-            UPDATE users
-            SET step='unit'
-            WHERE callsign IS NOT NULL
-              AND unit IS NULL
+            CREATE INDEX IF NOT EXISTS idx_channels_band
+            ON channels(band)
         """)
 
-        await db.execute("""
-            UPDATE users
-            SET step='position'
-            WHERE callsign IS NOT NULL
-              AND unit IS NOT NULL
-              AND position IS NULL
-        """)
-
-        await db.execute("""
-            UPDATE users
-            SET step='done'
-            WHERE callsign IS NOT NULL
-              AND unit IS NOT NULL
-              AND position IS NOT NULL
-        """)
-
-        await db.commit()
-
-        # -----------------------------------------------------
-        # Заполняем каналы только если таблица пустая
-        # -----------------------------------------------------
-
-        cursor = await db.execute(
+        # Заполняем каналы, только если PostgreSQL пустой
+        count = await db.fetchval(
             "SELECT COUNT(*) FROM channels"
         )
 
-        count = (await cursor.fetchone())[0]
-
         if count == 0:
+
+            channel_id = 1
 
             for band, groups in FREQUENCIES.items():
 
                 for group, channels in groups.items():
 
-                    for channel, freq in channels.items():
+                    for channel, frequency in channels.items():
 
                         await db.execute(
                             """
                             INSERT INTO channels
-                            (band, channel, frequency, owner, expires_at)
-                            VALUES (?, ?, ?, NULL, NULL)
+                            (id, band, channel, frequency)
+                            VALUES ($1, $2, $3, $4)
                             """,
-                            (
-                                band,
-                                f"{group}-{channel}",
-                                freq
-                            )
+                            channel_id,
+                            band,
+                            f"{group}-{channel}",
+                            int(frequency)
                         )
 
-            await db.commit()
+                        channel_id += 1
+
+            print(
+                f"Создано каналов: {channel_id - 1}"
+            )
+
+
+# =========================================================
+# ОДНОРАЗОВАЯ МИГРАЦИЯ СТАРОГО SQLITE
+# =========================================================
+
+async def migrate_old_sqlite():
+
+    if not os.path.exists("users.db"):
+        print("Старого users.db нет — миграция не требуется")
+        return
+
+    print("Найден старый users.db. Проверяем миграцию...")
+
+    try:
+
+        async with aiosqlite.connect("users.db") as old_db:
+
+            try:
+                cursor = await old_db.execute(
+                    """
+                    SELECT id, username, callsign,
+                           unit, position, status
+                    FROM users
+                    """
+                )
+
+                old_users = await cursor.fetchall()
+
+            except Exception:
+                old_users = []
+
+            try:
+                cursor = await old_db.execute(
+                    """
+                    SELECT id, band, channel,
+                           frequency, owner, expires_at
+                    FROM channels
+                    """
+                )
+
+                old_channels = await cursor.fetchall()
+
+            except Exception:
+                old_channels = []
+
+    except Exception as e:
+
+        print(
+            f"Ошибка чтения старого users.db: {e}"
+        )
+
+        return
+
+    async with DB_POOL.acquire() as db:
+
+        # -------------------------------------------------
+        # Пользователи
+        # -------------------------------------------------
+
+        for row in old_users:
+
+            uid, username, callsign, unit, position, status = row
+
+            if callsign and unit and position:
+                step = "done"
+            elif callsign and unit:
+                step = "position"
+            elif callsign:
+                step = "unit"
+            else:
+                step = "callsign"
+
+            await db.execute(
+                """
+                INSERT INTO users
+                (id, username, callsign, unit,
+                 position, status, step)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                uid,
+                username,
+                callsign,
+                unit,
+                position,
+                status,
+                step
+            )
+
+        # -------------------------------------------------
+        # Каналы
+        # -------------------------------------------------
+
+        pg_count = await db.fetchval(
+            "SELECT COUNT(*) FROM channels"
+        )
+
+        if pg_count == 0 and old_channels:
+
+            for row in old_channels:
+
+                channel_id, band, channel, frequency, owner, expires_at = row
+
+                await db.execute(
+                    """
+                    INSERT INTO channels
+                    (id, band, channel, frequency,
+                     owner, expires_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (id) DO NOTHING
+                    """,
+                    channel_id,
+                    band,
+                    channel,
+                    frequency,
+                    owner,
+                    expires_at
+                )
+
+    print(
+        f"Миграция завершена. "
+        f"Пользователей: {len(old_users)}"
+    )
 
 
 # =========================================================
@@ -210,61 +346,59 @@ async def init_db():
 
 async def get_user(uid):
 
-    async with aiosqlite.connect(DB) as db:
+    async with DB_POOL.acquire() as db:
 
-        cursor = await db.execute(
+        return await db.fetchrow(
             """
-            SELECT
-                id,
-                username,
-                callsign,
-                unit,
-                position,
-                status,
-                step
+            SELECT id, username, callsign,
+                   unit, position, status, step
             FROM users
-            WHERE id=?
+            WHERE id=$1
             """,
-            (uid,)
+            uid
         )
 
-        return await cursor.fetchone()
+
+# =========================================================
+# ПРОВЕРКА ДОСТУПА
+# =========================================================
+
+async def is_approved(uid):
+
+    user = await get_user(uid)
+
+    return (
+        user is not None
+        and user["status"] == "approved"
+    )
 
 
 # =========================================================
-# ПРОВЕРКА АДМИНА
-# =========================================================
-
-def is_admin(uid):
-    return uid == ADMIN_ID
-
-
-# =========================================================
-# ОСВОБОЖДЕНИЕ ПРОСРОЧЕННЫХ КАНАЛОВ
+# ОСВОБОЖДЕНИЕ ПРОСРОЧЕННЫХ
 # =========================================================
 
 async def release_expired_channels():
 
     now = int(time.time())
 
-    async with aiosqlite.connect(DB) as db:
+    async with DB_POOL.acquire() as db:
 
-        await db.execute(
+        result = await db.execute(
             """
             UPDATE channels
             SET owner=NULL,
                 expires_at=NULL
             WHERE expires_at IS NOT NULL
-              AND expires_at <= ?
+              AND expires_at <= $1
             """,
-            (now,)
+            now
         )
 
-        await db.commit()
+    return result
 
 
 # =========================================================
-# ФОРМАТ ОСТАВШЕГОСЯ ВРЕМЕНИ
+# ФОРМАТ ВРЕМЕНИ
 # =========================================================
 
 def format_time_left(expires_at):
@@ -289,44 +423,911 @@ def format_time_left(expires_at):
         return f"{hours} ч"
 
     if minutes > 0:
-
-        if seconds > 0:
-            return f"{minutes} мин {seconds} сек"
-
-        return f"{minutes} мин"
+        return f"{minutes} мин {seconds} сек"
 
     return f"{seconds} сек"
 
 
 # =========================================================
-# ТЕКСТ ДЛИТЕЛЬНОСТИ
+# ПРИВЕТСТВЕННАЯ ИНСТРУКЦИЯ
 # =========================================================
 
-def duration_text(minutes):
+WELCOME_TEXT = """
+👋 Добро пожаловать!
 
-    if minutes == 15:
-        return "15 минут"
+Это бот для работы с каналами и частотами.
 
-    if minutes == 30:
-        return "30 минут"
+📌 Как пользоваться:
 
-    if minutes == 60:
-        return "1 час"
+1️⃣ Пройдите регистрацию:
+• позывной
+• подразделение
+• должность
 
-    if minutes == 120:
-        return "2 часа"
+2️⃣ После одобрения администратора нажмите «☰ Меню».
 
-    if minutes == 240:
-        return "4 часа"
+3️⃣ В разделе «📡 Частоты» выберите нужный диапазон.
 
-    if minutes == 480:
-        return "8 часов"
+4️⃣ Выберите свободный канал.
 
-    return f"{minutes} минут"
+5️⃣ Укажите, на сколько времени хотите его занять.
+
+6️⃣ После занятия канала другие пользователи увидят:
+• канал
+• частоту
+• позывной владельца
+• оставшееся время
+
+📍 В разделе «Мой канал» можно посмотреть свой канал и досрочно его освободить.
+
+⚠️ Один пользователь может одновременно занимать только один канал.
+
+⏳ После окончания выбранного времени канал автоматически освобождается.
+"""
 
 
 # =========================================================
-# ВЫБОР ВРЕМЕНИ
+# START
+# =========================================================
+
+@dp.message(CommandStart())
+async def start(message: types.Message):
+
+    uid = message.from_user.id
+
+    user = await get_user(uid)
+
+    # -----------------------------------------------------
+    # НОВЫЙ ПОЛЬЗОВАТЕЛЬ
+    # -----------------------------------------------------
+
+    if not user:
+
+        async with DB_POOL.acquire() as db:
+
+            await db.execute(
+                """
+                INSERT INTO users
+                (id, username, status, step)
+                VALUES ($1, $2, 'pending', 'callsign')
+                """,
+                uid,
+                message.from_user.username
+            )
+
+        await message.answer(
+            WELCOME_TEXT,
+            reply_markup=main_menu_keyboard()
+        )
+
+        await message.answer(
+            "Для начала регистрации введите ваш позывной:"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ОБНОВЛЯЕМ USERNAME
+    # -----------------------------------------------------
+
+    async with DB_POOL.acquire() as db:
+
+        await db.execute(
+            """
+            UPDATE users
+            SET username=$1
+            WHERE id=$2
+            """,
+            message.from_user.username,
+            uid
+        )
+
+    status = user["status"]
+    step = user["step"]
+
+    # -----------------------------------------------------
+    # НЕЗАКОНЧЕННАЯ РЕГИСТРАЦИЯ
+    # -----------------------------------------------------
+
+    if step == "callsign":
+
+        await message.answer(
+            "Введите ваш позывной:",
+            reply_markup=main_menu_keyboard()
+        )
+
+        return
+
+    if step == "unit":
+
+        await message.answer(
+            "Введите подразделение:"
+        )
+
+        return
+
+    if step == "position":
+
+        await message.answer(
+            "Введите должность:"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ОЖИДАЕТ ПРОВЕРКИ
+    # -----------------------------------------------------
+
+    if status == "pending":
+
+        await message.answer(
+            "⏳ Ваша заявка уже отправлена администратору.\n\n"
+            "Ожидайте подтверждения.",
+            reply_markup=main_menu_keyboard()
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ОТКЛОНЁН
+    # -----------------------------------------------------
+
+    if status == "rejected":
+
+        await message.answer(
+            "❌ Ваша заявка была отклонена.",
+            reply_markup=main_menu_keyboard()
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ОДОБРЕН
+    # -----------------------------------------------------
+
+    if status == "approved":
+
+        await message.answer(
+            "📋 Главное меню:",
+            reply_markup=main_menu_keyboard()
+        )
+
+        await message.answer(
+            "Выберите нужный раздел:",
+            reply_markup=inline_main_menu()
+        )
+
+
+# =========================================================
+# КНОПКА МЕНЮ
+# =========================================================
+
+@dp.message(F.text == "☰ Меню")
+async def menu_button(message: types.Message):
+
+    uid = message.from_user.id
+
+    user = await get_user(uid)
+
+    if not user:
+
+        await start(message)
+
+        return
+
+    status = user["status"]
+    step = user["step"]
+
+    if step == "callsign":
+
+        await message.answer(
+            "Введите ваш позывной:"
+        )
+
+        return
+
+    if step == "unit":
+
+        await message.answer(
+            "Введите подразделение:"
+        )
+
+        return
+
+    if step == "position":
+
+        await message.answer(
+            "Введите должность:"
+        )
+
+        return
+
+    if status == "pending":
+
+        await message.answer(
+            "⏳ Ваша заявка ещё находится на проверке."
+        )
+
+        return
+
+    if status == "rejected":
+
+        await message.answer(
+            "❌ Ваша заявка была отклонена."
+        )
+
+        return
+
+    await message.answer(
+        "📋 Главное меню:",
+        reply_markup=inline_main_menu()
+    )
+
+
+# =========================================================
+# РЕГИСТРАЦИЯ
+# =========================================================
+
+@dp.message(F.text & ~F.text.startswith("/"))
+async def registration(message: types.Message):
+
+    if message.text == "☰ Меню":
+        return
+
+    uid = message.from_user.id
+    text = message.text.strip()
+
+    if not text:
+        return
+
+    user = await get_user(uid)
+
+    if not user:
+        return
+
+    status = user["status"]
+    step = user["step"]
+
+    # Одобренный пользователь
+    if status == "approved":
+
+        await message.answer(
+            "📋 Используйте кнопку «☰ Меню»."
+        )
+
+        return
+
+    # Заявка уже отправлена
+    if status == "pending" and step == "done":
+
+        await message.answer(
+            "⏳ Ваша заявка уже отправлена администратору."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ПОЗЫВНОЙ
+    # -----------------------------------------------------
+
+    if step == "callsign":
+
+        async with DB_POOL.acquire() as db:
+
+            await db.execute(
+                """
+                UPDATE users
+                SET callsign=$1,
+                    step='unit'
+                WHERE id=$2
+                """,
+                text,
+                uid
+            )
+
+        await message.answer(
+            "Введите подразделение:"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ПОДРАЗДЕЛЕНИЕ
+    # -----------------------------------------------------
+
+    if step == "unit":
+
+        async with DB_POOL.acquire() as db:
+
+            await db.execute(
+                """
+                UPDATE users
+                SET unit=$1,
+                    step='position'
+                WHERE id=$2
+                """,
+                text,
+                uid
+            )
+
+        await message.answer(
+            "Введите должность:"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ДОЛЖНОСТЬ
+    # -----------------------------------------------------
+
+    if step == "position":
+
+        async with DB_POOL.acquire() as db:
+
+            await db.execute(
+                """
+                UPDATE users
+                SET position=$1,
+                    step='done',
+                    status='pending'
+                WHERE id=$2
+                """,
+                text,
+                uid
+            )
+
+            user_data = await db.fetchrow(
+                """
+                SELECT callsign, unit, position
+                FROM users
+                WHERE id=$1
+                """,
+                uid
+            )
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="✅ Одобрить",
+                        callback_data=f"approve_{uid}"
+                    ),
+                    InlineKeyboardButton(
+                        text="❌ Отклонить",
+                        callback_data=f"reject_{uid}"
+                    )
+                ]
+            ]
+        )
+
+        await bot.send_message(
+            ADMIN_ID,
+            "🆕 Новая заявка:\n\n"
+            f"🆔 ID: {uid}\n"
+            f"📛 Позывной: {user_data['callsign']}\n"
+            f"🏢 Подразделение: {user_data['unit']}\n"
+            f"🎖 Должность: {user_data['position']}",
+            reply_markup=keyboard
+        )
+
+        await message.answer(
+            "✅ Заявка заполнена и отправлена администратору.\n\n"
+            "Ожидайте подтверждения."
+        )
+
+
+# =========================================================
+# ОДОБРЕНИЕ
+# =========================================================
+
+@dp.callback_query(F.data.startswith("approve_"))
+async def approve(call: CallbackQuery):
+
+    if call.from_user.id != ADMIN_ID:
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    uid = int(call.data.split("_")[1])
+
+    async with DB_POOL.acquire() as db:
+
+        result = await db.execute(
+            """
+            UPDATE users
+            SET status='approved',
+                step='done'
+            WHERE id=$1
+            """,
+            uid
+        )
+
+    if result == "UPDATE 0":
+
+        await call.answer(
+            "Пользователь не найден.",
+            show_alert=True
+        )
+
+        return
+
+    await bot.send_message(
+        uid,
+        "✅ Ваша заявка одобрена!\n\n"
+        "Доступ открыт.",
+        reply_markup=main_menu_keyboard()
+    )
+
+    await call.message.edit_reply_markup(
+        reply_markup=None
+    )
+
+    await call.answer("Одобрено")
+
+
+# =========================================================
+# ОТКЛОНЕНИЕ
+# =========================================================
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject(call: CallbackQuery):
+
+    if call.from_user.id != ADMIN_ID:
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    uid = int(call.data.split("_")[1])
+
+    async with DB_POOL.acquire() as db:
+
+        await db.execute(
+            """
+            UPDATE users
+            SET status='rejected'
+            WHERE id=$1
+            """,
+            uid
+        )
+
+    await bot.send_message(
+        uid,
+        "❌ Ваша заявка была отклонена.",
+        reply_markup=main_menu_keyboard()
+    )
+
+    await call.message.edit_reply_markup(
+        reply_markup=None
+    )
+
+    await call.answer("Отклонено")
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+
+@dp.message(Command("admin"))
+async def admin_command(message: types.Message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await message.answer(
+        "🔐 Панель администратора:",
+        reply_markup=admin_menu_keyboard()
+    )
+
+
+# =========================================================
+# USERS
+# =========================================================
+
+@dp.message(Command("users"))
+async def users_list(message: types.Message):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    async with DB_POOL.acquire() as db:
+
+        users = await db.fetch(
+            """
+            SELECT id, username, callsign,
+                   unit, position, status
+            FROM users
+            ORDER BY callsign
+            """
+        )
+
+    if not users:
+
+        await message.answer(
+            "📭 Пользователей нет."
+        )
+
+        return
+
+    text = "👥 Пользователи:\n\n"
+
+    for user in users:
+
+        text += (
+            f"🆔 {user['id']}\n"
+            f"👤 @{user['username'] or 'нет'}\n"
+            f"📛 {user['callsign'] or '—'}\n"
+            f"🏢 {user['unit'] or '—'}\n"
+            f"🎖 {user['position'] or '—'}\n"
+            f"📌 {user['status']}\n\n"
+        )
+
+    await message.answer(text)
+
+
+# =========================================================
+# ADMIN USERS
+# =========================================================
+
+@dp.callback_query(F.data == "admin_users")
+async def admin_users(call: CallbackQuery):
+
+    if call.from_user.id != ADMIN_ID:
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    async with DB_POOL.acquire() as db:
+
+        users = await db.fetch(
+            """
+            SELECT id, callsign, unit,
+                   position, status
+            FROM users
+            ORDER BY callsign
+            """
+        )
+
+    if not users:
+
+        await call.message.answer(
+            "📭 Пользователей нет."
+        )
+
+        await call.answer()
+
+        return
+
+    text = "👥 Пользователи:\n\n"
+
+    for user in users:
+
+        text += (
+            f"🆔 {user['id']}\n"
+            f"📛 {user['callsign'] or '—'}\n"
+            f"🏢 {user['unit'] or '—'}\n"
+            f"🎖 {user['position'] or '—'}\n"
+            f"📌 {user['status']}\n\n"
+        )
+
+    await call.message.answer(text)
+
+    await call.answer()
+
+
+# =========================================================
+# ADMIN CHANNELS
+# =========================================================
+
+@dp.callback_query(F.data == "admin_channels")
+async def admin_channels(call: CallbackQuery):
+
+    if call.from_user.id != ADMIN_ID:
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    await release_expired_channels()
+
+    async with DB_POOL.acquire() as db:
+
+        rows = await db.fetch(
+            """
+            SELECT
+                channels.id,
+                channels.band,
+                channels.channel,
+                channels.frequency,
+                channels.expires_at,
+                users.callsign
+            FROM channels
+            LEFT JOIN users
+                ON channels.owner=users.id
+            WHERE channels.owner IS NOT NULL
+            ORDER BY channels.band,
+                     channels.frequency
+            """
+        )
+
+    if not rows:
+
+        await call.message.answer(
+            "📡 Сейчас занятых каналов нет."
+        )
+
+        await call.answer()
+
+        return
+
+    text = "📡 Занятые каналы:\n\n"
+
+    for row in rows:
+
+        text += (
+            f"🆔 Канал ID: {row['id']}\n"
+            f"📡 {row['band']}\n"
+            f"🎯 {row['channel']}\n"
+            f"📶 {row['frequency']} MHz\n"
+            f"👤 {row['callsign'] or '—'}\n"
+            f"⏳ {format_time_left(row['expires_at'])}\n\n"
+        )
+
+    await call.message.answer(text)
+
+    await call.answer()
+
+
+# =========================================================
+# BACK MENU
+# =========================================================
+
+@dp.callback_query(F.data == "back_menu")
+async def back_menu(call: CallbackQuery):
+
+    await call.message.answer(
+        "📋 Главное меню:",
+        reply_markup=inline_main_menu()
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# INSTRUCTIONS
+# =========================================================
+
+@dp.callback_query(F.data == "instructions")
+async def instructions(call: CallbackQuery):
+
+    await call.message.answer(
+        WELCOME_TEXT,
+        reply_markup=inline_main_menu()
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# OPEN SECTION
+# =========================================================
+
+@dp.callback_query(F.data == "open_section")
+async def open_section(call: CallbackQuery):
+
+    await call.message.answer(
+        "📋 Раздел доступен."
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# FREQUENCIES
+# =========================================================
+
+@dp.callback_query(F.data == "frequencies")
+async def frequencies(call: CallbackQuery):
+
+    keyboard = []
+
+    for band in FREQUENCIES.keys():
+
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=band.replace("GHz", " GHz"),
+                    callback_data=f"band_{band}"
+                )
+            ]
+        )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Главное меню",
+                callback_data="back_menu"
+            )
+        ]
+    )
+
+    await call.message.answer(
+        "📡 Выберите диапазон:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=keyboard
+        )
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# ПОКАЗАТЬ ДИАПАЗОН
+# =========================================================
+
+@dp.callback_query(F.data.startswith("band_"))
+async def show_band(call: CallbackQuery):
+
+    if not await is_approved(call.from_user.id):
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
+    await release_expired_channels()
+
+    band = call.data.replace(
+        "band_",
+        "",
+        1
+    )
+
+    async with DB_POOL.acquire() as db:
+
+        rows = await db.fetch(
+            """
+            SELECT
+                channels.id,
+                channels.channel,
+                channels.frequency,
+                channels.owner,
+                channels.expires_at,
+                users.callsign
+            FROM channels
+            LEFT JOIN users
+                ON channels.owner=users.id
+            WHERE channels.band=$1
+            ORDER BY channels.frequency
+            """,
+            band
+        )
+
+    if not rows:
+
+        await call.message.answer(
+            "❌ В этом диапазоне каналов нет."
+        )
+
+        await call.answer()
+
+        return
+
+    keyboard = []
+
+    for row in rows:
+
+        if row["owner"] is None:
+
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=(
+                            f"🟢 {row['channel']} • "
+                            f"{row['frequency']} MHz"
+                        ),
+                        callback_data=f"take_{row['id']}"
+                    )
+                ]
+            )
+
+        else:
+
+            timer = format_time_left(
+                row["expires_at"]
+            )
+
+            pilot = row["callsign"] or "неизвестен"
+
+            # Время вынесено отдельной строкой,
+            # чтобы оно всегда было видно.
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=(
+                            f"🔴 {row['channel']} • "
+                            f"{row['frequency']} MHz"
+                        ),
+                        callback_data="occupied"
+                    )
+                ]
+            )
+
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        text=(
+                            f"👤 {pilot} • "
+                            f"⏳ осталось {timer}"
+                        ),
+                        callback_data="occupied"
+                    )
+                ]
+            )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Диапазоны",
+                callback_data="frequencies"
+            )
+        ]
+    )
+
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                text="📍 Мой канал",
+                callback_data="my_channel"
+            )
+        ]
+    )
+
+    await call.message.answer(
+        f"📡 Каналы диапазона {band}:\n\n"
+        "🟢 — свободен\n"
+        "🔴 — занят\n"
+        "👤 — позывной владельца\n"
+        "⏳ — оставшееся время",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=keyboard
+        )
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# ЗАНЯТЫЙ
+# =========================================================
+
+@dp.callback_query(F.data == "occupied")
+async def occupied(call: CallbackQuery):
+
+    await call.answer(
+        "🔴 Этот канал уже занят.",
+        show_alert=True
+    )
+
+
+# =========================================================
+# ВЫБОР КАНАЛА
 # =========================================================
 
 def duration_keyboard(channel_id):
@@ -374,1132 +1375,6 @@ def duration_keyboard(channel_id):
 
 
 # =========================================================
-# ПРИВЕТСТВИЕ ДЛЯ НОВОГО ПОЛЬЗОВАТЕЛЯ
-# =========================================================
-
-WELCOME_TEXT = (
-    "👋 Добро пожаловать!\n\n"
-    "Это бот для регистрации и временного занятия каналов.\n\n"
-    "Как пользоваться:\n"
-    "1. Пройдите регистрацию.\n"
-    "2. Дождитесь подтверждения администратора.\n"
-    "3. Нажмите «☰ Меню».\n"
-    "4. Откройте «📡 Частоты».\n"
-    "5. Выберите нужный диапазон.\n"
-    "6. Выберите свободный канал.\n"
-    "7. Укажите срок занятия канала.\n\n"
-    "Важно:\n"
-    "• Один пилот может одновременно занимать только один канал.\n"
-    "• После окончания выбранного времени канал автоматически освобождается.\n"
-    "• Свой канал можно освободить раньше через «📍 Мой канал».\n"
-    "• Перед занятием канала обязательно проверяйте его текущий статус.\n\n"
-    "Для начала регистрации введите ваш позывной:"
-)
-
-
-# =========================================================
-# /START
-# =========================================================
-
-@dp.message(CommandStart())
-async def start(message: types.Message):
-
-    uid = message.from_user.id
-
-    user = await get_user(uid)
-
-    # -----------------------------------------------------
-    # НОВЫЙ ПОЛЬЗОВАТЕЛЬ
-    # -----------------------------------------------------
-
-    if not user:
-
-        async with aiosqlite.connect(DB) as db:
-
-            await db.execute(
-                """
-                INSERT INTO users
-                (id, username, status, step)
-                VALUES (?, ?, 'pending', 'callsign')
-                """,
-                (
-                    uid,
-                    message.from_user.username
-                )
-            )
-
-            await db.commit()
-
-        await message.answer(
-            WELCOME_TEXT,
-            reply_markup=main_menu_keyboard()
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # ПОЛЬЗОВАТЕЛЬ УЖЕ ЕСТЬ
-    # -----------------------------------------------------
-
-    # Обновляем username, но регистрацию не начинаем заново
-    async with aiosqlite.connect(DB) as db:
-
-        await db.execute(
-            """
-            UPDATE users
-            SET username=?
-            WHERE id=?
-            """,
-            (
-                message.from_user.username,
-                uid
-            )
-        )
-
-        await db.commit()
-
-    status = user[5]
-    step = user[6]
-
-    # -----------------------------------------------------
-    # Если старая регистрация не завершена
-    # -----------------------------------------------------
-
-    if step == "callsign":
-
-        await message.answer(
-            "Введите ваш позывной:",
-            reply_markup=main_menu_keyboard()
-        )
-
-        return
-
-    if step == "unit":
-
-        await message.answer(
-            "Введите подразделение:",
-            reply_markup=main_menu_keyboard()
-        )
-
-        return
-
-    if step == "position":
-
-        await message.answer(
-            "Введите должность:",
-            reply_markup=main_menu_keyboard()
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # Ожидание проверки
-    # -----------------------------------------------------
-
-    if status == "pending":
-
-        await message.answer(
-            "⏳ Ваша заявка уже отправлена администратору.\n\n"
-            "Повторно заполнять регистрацию не нужно.\n"
-            "Ожидайте подтверждения.",
-            reply_markup=main_menu_keyboard()
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # Отклонён
-    # -----------------------------------------------------
-
-    if status == "rejected":
-
-        await message.answer(
-            "❌ Ваша заявка была отклонена.",
-            reply_markup=main_menu_keyboard()
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # Одобрен
-    # -----------------------------------------------------
-
-    if status == "approved":
-
-        await message.answer(
-            "📋 Главное меню:",
-            reply_markup=main_menu_keyboard()
-        )
-
-        await message.answer(
-            "Выберите нужный раздел:",
-            reply_markup=inline_main_menu()
-        )
-
-
-# =========================================================
-# КНОПКА ☰ МЕНЮ
-# =========================================================
-
-@dp.message(F.text == "☰ Меню")
-async def menu_button(message: types.Message):
-
-    uid = message.from_user.id
-
-    user = await get_user(uid)
-
-    if not user:
-
-        await start(message)
-        return
-
-    status = user[5]
-    step = user[6]
-
-    if step == "callsign":
-
-        await message.answer(
-            "Введите ваш позывной:"
-        )
-
-        return
-
-    if step == "unit":
-
-        await message.answer(
-            "Введите подразделение:"
-        )
-
-        return
-
-    if step == "position":
-
-        await message.answer(
-            "Введите должность:"
-        )
-
-        return
-
-    if status == "pending":
-
-        await message.answer(
-            "⏳ Ваша заявка ещё находится на проверке."
-        )
-
-        return
-
-    if status == "rejected":
-
-        await message.answer(
-            "❌ Ваша заявка была отклонена."
-        )
-
-        return
-
-    if status != "approved":
-
-        return
-
-    await message.answer(
-        "📋 Главное меню:",
-        reply_markup=inline_main_menu()
-    )
-
-
-# =========================================================
-# РЕГИСТРАЦИЯ
-# =========================================================
-
-@dp.message(F.text & ~F.text.startswith("/"))
-async def registration(message: types.Message):
-
-    if message.text == "☰ Меню":
-        return
-
-    uid = message.from_user.id
-    text = message.text.strip()
-
-    if not text:
-        return
-
-    user = await get_user(uid)
-
-    if not user:
-        return
-
-    status = user[5]
-    step = user[6]
-
-    # -----------------------------------------------------
-    # Уже одобрен
-    # -----------------------------------------------------
-
-    if status == "approved":
-
-        await message.answer(
-            "📋 Вы уже зарегистрированы.\n"
-            "Используйте кнопку «☰ Меню».",
-            reply_markup=main_menu_keyboard()
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # Заявка уже отправлена
-    # -----------------------------------------------------
-
-    if status == "pending" and step == "done":
-
-        await message.answer(
-            "⏳ Ваша заявка уже отправлена администратору.\n"
-            "Ожидайте подтверждения."
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # Отклонён
-    # -----------------------------------------------------
-
-    if status == "rejected":
-
-        await message.answer(
-            "❌ Ваша заявка была отклонена."
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # ПОЗЫВНОЙ
-    # -----------------------------------------------------
-
-    if step == "callsign":
-
-        async with aiosqlite.connect(DB) as db:
-
-            await db.execute(
-                """
-                UPDATE users
-                SET callsign=?,
-                    step='unit'
-                WHERE id=?
-                """,
-                (
-                    text,
-                    uid
-                )
-            )
-
-            await db.commit()
-
-        await message.answer(
-            "Введите подразделение:"
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # ПОДРАЗДЕЛЕНИЕ
-    # -----------------------------------------------------
-
-    if step == "unit":
-
-        async with aiosqlite.connect(DB) as db:
-
-            await db.execute(
-                """
-                UPDATE users
-                SET unit=?,
-                    step='position'
-                WHERE id=?
-                """,
-                (
-                    text,
-                    uid
-                )
-            )
-
-            await db.commit()
-
-        await message.answer(
-            "Введите должность:"
-        )
-
-        return
-
-    # -----------------------------------------------------
-    # ДОЛЖНОСТЬ
-    # -----------------------------------------------------
-
-    if step == "position":
-
-        async with aiosqlite.connect(DB) as db:
-
-            await db.execute(
-                """
-                UPDATE users
-                SET position=?,
-                    step='done',
-                    status='pending'
-                WHERE id=?
-                """,
-                (
-                    text,
-                    uid
-                )
-            )
-
-            await db.commit()
-
-            cursor = await db.execute(
-                """
-                SELECT callsign, unit, position
-                FROM users
-                WHERE id=?
-                """,
-                (uid,)
-            )
-
-            data = await cursor.fetchone()
-
-        callsign, unit, position = data
-
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="✅ Одобрить",
-                        callback_data=f"approve_{uid}"
-                    ),
-                    InlineKeyboardButton(
-                        text="❌ Отклонить",
-                        callback_data=f"reject_{uid}"
-                    )
-                ]
-            ]
-        )
-
-        await bot.send_message(
-            ADMIN_ID,
-            "🆕 Новая заявка:\n\n"
-            f"ID: {uid}\n"
-            f"Позывной: {callsign}\n"
-            f"Подразделение: {unit}\n"
-            f"Должность: {position}",
-            reply_markup=keyboard
-        )
-
-        await message.answer(
-            "✅ Регистрация завершена.\n\n"
-            "Заявка отправлена администратору.\n"
-            "Ожидайте подтверждения."
-        )
-
-
-# =========================================================
-# ОДОБРИТЬ
-# =========================================================
-
-@dp.callback_query(F.data.startswith("approve_"))
-async def approve(call: CallbackQuery):
-
-    if not is_admin(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
-
-    uid = int(call.data.split("_")[1])
-
-    async with aiosqlite.connect(DB) as db:
-
-        await db.execute(
-            """
-            UPDATE users
-            SET status='approved',
-                step='done'
-            WHERE id=?
-            """,
-            (uid,)
-        )
-
-        await db.commit()
-
-    await bot.send_message(
-        uid,
-        "✅ Ваша заявка одобрена!\n\n"
-        "Доступ открыт.\n"
-        "Для работы с ботом нажмите «☰ Меню».",
-        reply_markup=main_menu_keyboard()
-    )
-
-    try:
-        await call.message.edit_reply_markup(
-            reply_markup=None
-        )
-    except Exception:
-        pass
-
-    await call.answer("Одобрено")
-
-
-# =========================================================
-# ОТКЛОНИТЬ
-# =========================================================
-
-@dp.callback_query(F.data.startswith("reject_"))
-async def reject(call: CallbackQuery):
-
-    if not is_admin(call.from_user.id):
-
-        await call.answer(
-            "Нет доступа.",
-            show_alert=True
-        )
-
-        return
-
-    uid = int(call.data.split("_")[1])
-
-    async with aiosqlite.connect(DB) as db:
-
-        await db.execute(
-            """
-            UPDATE users
-            SET status='rejected'
-            WHERE id=?
-            """,
-            (uid,)
-        )
-
-        await db.commit()
-
-    await bot.send_message(
-        uid,
-        "❌ Ваша заявка была отклонена.",
-        reply_markup=main_menu_keyboard()
-    )
-
-    try:
-        await call.message.edit_reply_markup(
-            reply_markup=None
-        )
-    except Exception:
-        pass
-
-    await call.answer("Отклонено")
-
-
-# =========================================================
-# /USERS
-# =========================================================
-
-@dp.message(Command("users"))
-async def users_list(message: types.Message):
-
-    if not is_admin(message.from_user.id):
-        return
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
-            """
-            SELECT
-                id,
-                username,
-                callsign,
-                unit,
-                position,
-                status
-            FROM users
-            ORDER BY callsign
-            """
-        )
-
-        users = await cursor.fetchall()
-
-    if not users:
-
-        await message.answer(
-            "📭 Пользователей нет."
-        )
-
-        return
-
-    text = "👥 Пользователи:\n\n"
-
-    for (
-        uid,
-        username,
-        callsign,
-        unit,
-        position,
-        status
-    ) in users:
-
-        text += (
-            f"ID: {uid}\n"
-            f"Username: @{username or 'нет'}\n"
-            f"Позывной: {callsign or '—'}\n"
-            f"Подразделение: {unit or '—'}\n"
-            f"Должность: {position or '—'}\n"
-            f"Статус: {status}\n\n"
-        )
-
-    await message.answer(text)
-
-
-# =========================================================
-# /APPROVE ID
-# =========================================================
-
-@dp.message(Command("approve"))
-async def approve_command(message: types.Message):
-
-    if not is_admin(message.from_user.id):
-        return
-
-    parts = message.text.split()
-
-    if len(parts) != 2:
-
-        await message.answer(
-            "Использование:\n"
-            "/approve ID"
-        )
-
-        return
-
-    try:
-        uid = int(parts[1])
-    except ValueError:
-
-        await message.answer(
-            "❌ ID должен быть числом."
-        )
-
-        return
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
-            "SELECT id FROM users WHERE id=?",
-            (uid,)
-        )
-
-        user = await cursor.fetchone()
-
-        if not user:
-
-            await message.answer(
-                "❌ Пользователь не найден."
-            )
-
-            return
-
-        await db.execute(
-            """
-            UPDATE users
-            SET status='approved',
-                step='done'
-            WHERE id=?
-            """,
-            (uid,)
-        )
-
-        await db.commit()
-
-    await bot.send_message(
-        uid,
-        "✅ Ваша заявка одобрена!\n\n"
-        "Доступ открыт.",
-        reply_markup=main_menu_keyboard()
-    )
-
-    await message.answer(
-        f"✅ Пользователь {uid} одобрен."
-    )
-
-
-# =========================================================
-# /REJECT ID
-# =========================================================
-
-@dp.message(Command("reject"))
-async def reject_command(message: types.Message):
-
-    if not is_admin(message.from_user.id):
-        return
-
-    parts = message.text.split()
-
-    if len(parts) != 2:
-
-        await message.answer(
-            "Использование:\n"
-            "/reject ID"
-        )
-
-        return
-
-    try:
-        uid = int(parts[1])
-    except ValueError:
-
-        await message.answer(
-            "❌ ID должен быть числом."
-        )
-
-        return
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
-            "SELECT id FROM users WHERE id=?",
-            (uid,)
-        )
-
-        user = await cursor.fetchone()
-
-        if not user:
-
-            await message.answer(
-                "❌ Пользователь не найден."
-            )
-
-            return
-
-        await db.execute(
-            """
-            UPDATE users
-            SET status='rejected'
-            WHERE id=?
-            """,
-            (uid,)
-        )
-
-        await db.commit()
-
-    await bot.send_message(
-        uid,
-        "❌ Ваша заявка была отклонена.",
-        reply_markup=main_menu_keyboard()
-    )
-
-    await message.answer(
-        f"❌ Пользователь {uid} отклонён."
-    )
-
-
-# =========================================================
-# /CHANNELS
-# =========================================================
-
-@dp.message(Command("channels"))
-async def channels_admin(message: types.Message):
-
-    if not is_admin(message.from_user.id):
-        return
-
-    await release_expired_channels()
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
-            """
-            SELECT
-                channels.band,
-                channels.channel,
-                channels.frequency,
-                channels.owner,
-                channels.expires_at,
-                users.callsign
-            FROM channels
-            LEFT JOIN users
-                ON channels.owner = users.id
-            ORDER BY channels.band, channels.frequency
-            """
-        )
-
-        rows = await cursor.fetchall()
-
-    if not rows:
-
-        await message.answer(
-            "📭 Каналов нет."
-        )
-
-        return
-
-    text = "📡 Состояние каналов:\n\n"
-
-    for (
-        band,
-        channel,
-        frequency,
-        owner,
-        expires_at,
-        callsign
-    ) in rows:
-
-        if owner is None:
-
-            text += (
-                f"🟢 {band} | {channel} | "
-                f"{frequency} MHz | свободен\n"
-            )
-
-        else:
-
-            timer = format_time_left(expires_at)
-
-            text += (
-                f"🔴 {band} | {channel} | "
-                f"{frequency} MHz\n"
-                f"   Пилот: {callsign or '—'}\n"
-                f"   ID: {owner}\n"
-                f"   Осталось: {timer}\n\n"
-            )
-
-    # Telegram ограничивает размер одного сообщения
-    if len(text) > 4000:
-
-        for i in range(0, len(text), 4000):
-
-            await message.answer(
-                text[i:i + 4000]
-            )
-
-    else:
-
-        await message.answer(text)
-
-
-# =========================================================
-# /RELEASE ID
-# =========================================================
-
-@dp.message(Command("release"))
-async def release_command(message: types.Message):
-
-    if not is_admin(message.from_user.id):
-        return
-
-    parts = message.text.split()
-
-    if len(parts) != 2:
-
-        await message.answer(
-            "Использование:\n"
-            "/release ID"
-        )
-
-        return
-
-    try:
-        uid = int(parts[1])
-    except ValueError:
-
-        await message.answer(
-            "❌ ID должен быть числом."
-        )
-
-        return
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
-            """
-            SELECT band, channel, frequency
-            FROM channels
-            WHERE owner=?
-            """,
-            (uid,)
-        )
-
-        channel = await cursor.fetchone()
-
-        if not channel:
-
-            await message.answer(
-                "❌ У этого пользователя нет занятого канала."
-            )
-
-            return
-
-        await db.execute(
-            """
-            UPDATE channels
-            SET owner=NULL,
-                expires_at=NULL
-            WHERE owner=?
-            """,
-            (uid,)
-        )
-
-        await db.commit()
-
-    await message.answer(
-        "✅ Канал освобождён.\n\n"
-        f"Диапазон: {channel[0]}\n"
-        f"Канал: {channel[1]}\n"
-        f"Частота: {channel[2]} MHz\n"
-        f"Пользователь ID: {uid}"
-    )
-
-    try:
-
-        await bot.send_message(
-            uid,
-            "ℹ️ Администратор освободил ваш канал."
-        )
-
-    except Exception:
-        pass
-
-
-# =========================================================
-# НАЗАД В МЕНЮ
-# =========================================================
-
-@dp.callback_query(F.data == "back_menu")
-async def back_menu(call: CallbackQuery):
-
-    await call.message.answer(
-        "📋 Главное меню:",
-        reply_markup=inline_main_menu()
-    )
-
-    await call.answer()
-
-
-# =========================================================
-# ОТКРЫТЬ РАЗДЕЛ
-# =========================================================
-
-@dp.callback_query(F.data == "open_section")
-async def open_section(call: CallbackQuery):
-
-    await call.message.answer(
-        "📋 Раздел доступен."
-    )
-
-    await call.answer()
-
-
-# =========================================================
-# ЧАСТОТЫ
-# =========================================================
-
-@dp.callback_query(F.data == "frequencies")
-async def frequencies(call: CallbackQuery):
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="1.2 GHz",
-                    callback_data="band_1.2GHz"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="1.5 GHz",
-                    callback_data="band_1.5GHz"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="2.4 GHz",
-                    callback_data="band_2.4GHz"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="3.3 GHz",
-                    callback_data="band_3.3GHz"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="3.7 GHz",
-                    callback_data="band_3.7GHz"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="5.8 GHz",
-                    callback_data="band_5.8GHz"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Главное меню",
-                    callback_data="back_menu"
-                )
-            ]
-        ]
-    )
-
-    await call.message.answer(
-        "📡 Выберите диапазон:",
-        reply_markup=keyboard
-    )
-
-    await call.answer()
-
-
-# =========================================================
-# ПОКАЗАТЬ КАНАЛЫ
-# =========================================================
-
-@dp.callback_query(F.data.startswith("band_"))
-async def show_band(call: CallbackQuery):
-
-    await release_expired_channels()
-
-    band = call.data.replace(
-        "band_",
-        ""
-    )
-
-    keyboard = []
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
-            """
-            SELECT
-                channels.id,
-                channels.channel,
-                channels.frequency,
-                channels.owner,
-                channels.expires_at,
-                users.callsign
-            FROM channels
-            LEFT JOIN users
-                ON channels.owner = users.id
-            WHERE channels.band=?
-            ORDER BY channels.frequency
-            """,
-            (band,)
-        )
-
-        rows = await cursor.fetchall()
-
-    if not rows:
-
-        await call.message.answer(
-            "❌ В этом диапазоне каналов нет."
-        )
-
-        await call.answer()
-
-        return
-
-    for (
-        channel_id,
-        channel,
-        frequency,
-        owner,
-        expires_at,
-        callsign
-    ) in rows:
-
-        # -------------------------------------------------
-        # СВОБОДНЫЙ
-        # -------------------------------------------------
-
-        if owner is None:
-
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text=(
-                            f"🟢 {channel} • "
-                            f"{frequency} MHz"
-                        ),
-                        callback_data=f"take_{channel_id}"
-                    )
-                ]
-            )
-
-        # -------------------------------------------------
-        # ЗАНЯТЫЙ
-        # -------------------------------------------------
-
-        else:
-
-            timer = format_time_left(
-                expires_at
-            )
-
-            pilot = callsign or "неизвестен"
-
-            # Всё в одну строку.
-            # Поэтому позывной не скрывает время.
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text=(
-                            f"🔴 {channel} | "
-                            f"{frequency} MHz | "
-                            f"{pilot} | {timer}"
-                        ),
-                        callback_data="occupied"
-                    )
-                ]
-            )
-
-    keyboard.append(
-        [
-            InlineKeyboardButton(
-                text="⬅️ Диапазоны",
-                callback_data="frequencies"
-            )
-        ]
-    )
-
-    keyboard.append(
-        [
-            InlineKeyboardButton(
-                text="📍 Мой канал",
-                callback_data="my_channel"
-            )
-        ]
-    )
-
-    await call.message.answer(
-        f"📡 Каналы диапазона {band}:\n\n"
-        "🟢 — свободен\n"
-        "🔴 — занят\n"
-        "Формат занятого канала: "
-        "канал | частота | позывной | время",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=keyboard
-        )
-    )
-
-    await call.answer()
-
-
-# =========================================================
-# ЗАНЯТЫЙ КАНАЛ
-# =========================================================
-
-@dp.callback_query(F.data == "occupied")
-async def occupied(call: CallbackQuery):
-
-    await call.answer(
-        "🔴 Этот канал уже занят.",
-        show_alert=True
-    )
-
-
-# =========================================================
 # НАЖАТИЕ НА СВОБОДНЫЙ КАНАЛ
 # =========================================================
 
@@ -1508,90 +1383,63 @@ async def take_channel(call: CallbackQuery):
 
     uid = call.from_user.id
 
-    channel_id = int(
-        call.data.replace(
-            "take_",
-            ""
-        )
-    )
-
-    await release_expired_channels()
-
-    # -----------------------------------------------------
-    # Проверяем регистрацию
-    # -----------------------------------------------------
-
-    user = await get_user(uid)
-
-    if not user or user[5] != "approved":
+    if not await is_approved(uid):
 
         await call.answer(
-            "❌ У вас нет доступа.",
+            "Нет доступа.",
             show_alert=True
         )
 
         return
 
-    # -----------------------------------------------------
-    # Проверяем уже занятый канал
-    # -----------------------------------------------------
+    channel_id = int(
+        call.data.replace(
+            "take_",
+            "",
+            1
+        )
+    )
 
-    async with aiosqlite.connect(DB) as db:
+    await release_expired_channels()
 
-        cursor = await db.execute(
+    async with DB_POOL.acquire() as db:
+
+        busy = await db.fetchrow(
             """
-            SELECT
-                band,
-                channel,
-                frequency,
-                expires_at
+            SELECT band, channel,
+                   frequency, expires_at
             FROM channels
-            WHERE owner=?
+            WHERE owner=$1
+            LIMIT 1
             """,
-            (uid,)
+            uid
         )
 
-        busy = await cursor.fetchone()
+        if busy:
 
-    if busy:
+            await call.message.answer(
+                "❌ У вас уже занят канал.\n\n"
+                f"📡 {busy['band']}\n"
+                f"🎯 {busy['channel']}\n"
+                f"📶 {busy['frequency']} MHz\n"
+                f"⏳ Осталось: "
+                f"{format_time_left(busy['expires_at'])}\n\n"
+                "Сначала освободите текущий канал."
+            )
 
-        timer = format_time_left(
-            busy[3]
-        )
+            await call.answer()
 
-        await call.message.answer(
-            "❌ У вас уже занят канал.\n\n"
-            f"📡 Диапазон: {busy[0]}\n"
-            f"🎯 Канал: {busy[1]}\n"
-            f"📶 Частота: {busy[2]} MHz\n"
-            f"⏳ Осталось: {timer}\n\n"
-            "Сначала освободите текущий канал."
-        )
+            return
 
-        await call.answer()
-
-        return
-
-    # -----------------------------------------------------
-    # Проверяем выбранный канал
-    # -----------------------------------------------------
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
+        channel = await db.fetchrow(
             """
-            SELECT
-                band,
-                channel,
-                frequency,
-                owner
+            SELECT band, channel,
+                   frequency, owner
             FROM channels
-            WHERE id=?
+            WHERE id=$1
             """,
-            (channel_id,)
+            channel_id
         )
-
-        channel = await cursor.fetchone()
 
     if not channel:
 
@@ -1602,7 +1450,7 @@ async def take_channel(call: CallbackQuery):
 
         return
 
-    if channel[3] is not None:
+    if channel["owner"] is not None:
 
         await call.answer(
             "❌ Этот канал уже занят.",
@@ -1611,13 +1459,9 @@ async def take_channel(call: CallbackQuery):
 
         return
 
-    # -----------------------------------------------------
-    # Выбор времени
-    # -----------------------------------------------------
-
     await call.message.answer(
-        f"📡 Канал: {channel[1]}\n"
-        f"📶 Частота: {channel[2]} MHz\n\n"
+        f"📡 Канал: {channel['channel']}\n"
+        f"📶 Частота: {channel['frequency']} MHz\n\n"
         "⏳ На сколько времени занять канал?",
         reply_markup=duration_keyboard(channel_id)
     )
@@ -1634,133 +1478,69 @@ async def choose_duration(call: CallbackQuery):
 
     uid = call.from_user.id
 
-    parts = call.data.split("_")
-
-    if len(parts) != 3:
+    if not await is_approved(uid):
 
         await call.answer(
-            "❌ Ошибка.",
+            "Нет доступа.",
             show_alert=True
         )
 
         return
+
+    parts = call.data.split("_")
 
     channel_id = int(parts[1])
     minutes = int(parts[2])
 
-    allowed = [15, 30, 60, 120, 240, 480]
-
-    if minutes not in allowed:
-
-        await call.answer(
-            "❌ Недопустимое время.",
-            show_alert=True
-        )
-
-        return
-
     await release_expired_channels()
 
-    # -----------------------------------------------------
-    # Проверяем пользователя
-    # -----------------------------------------------------
+    async with DB_POOL.acquire() as db:
 
-    user = await get_user(uid)
-
-    if not user or user[5] != "approved":
-
-        await call.answer(
-            "❌ Нет доступа.",
-            show_alert=True
-        )
-
-        return
-
-    callsign = user[2] or "неизвестен"
-
-    # -----------------------------------------------------
-    # Атомарно пытаемся занять канал
-    # -----------------------------------------------------
-
-    async with aiosqlite.connect(DB) as db:
-
-        cursor = await db.execute(
+        # Проверяем текущий канал
+        busy = await db.fetchrow(
             """
-            SELECT
-                band,
-                channel,
-                frequency,
-                owner
+            SELECT band, channel,
+                   frequency, expires_at
             FROM channels
-            WHERE id=?
+            WHERE owner=$1
+            LIMIT 1
             """,
-            (channel_id,)
+            uid
         )
-
-        channel = await cursor.fetchone()
-
-        if not channel:
-
-            await call.answer(
-                "❌ Канал не найден.",
-                show_alert=True
-            )
-
-            return
-
-        # Проверяем ещё раз наличие канала
-        cursor = await db.execute(
-            """
-            SELECT
-                band,
-                channel,
-                frequency,
-                expires_at
-            FROM channels
-            WHERE owner=?
-            """,
-            (uid,)
-        )
-
-        busy = await cursor.fetchone()
 
         if busy:
 
-            timer = format_time_left(
-                busy[3]
-            )
-
             await call.message.answer(
                 "❌ У вас уже занят канал.\n\n"
-                f"📡 {busy[0]} • {busy[1]}\n"
-                f"📶 {busy[2]} MHz\n"
-                f"⏳ Осталось: {timer}"
+                f"📡 {busy['band']} • {busy['channel']}\n"
+                f"📶 {busy['frequency']} MHz\n"
+                f"⏳ Осталось: "
+                f"{format_time_left(busy['expires_at'])}"
             )
 
             await call.answer()
 
             return
 
+        # Атомарно занимаем канал.
+        # Это защищает от ситуации,
+        # когда два человека нажали одновременно.
         expire = int(time.time()) + minutes * 60
 
-        cursor = await db.execute(
+        result = await db.execute(
             """
             UPDATE channels
-            SET owner=?,
-                expires_at=?
-            WHERE id=?
+            SET owner=$1,
+                expires_at=$2
+            WHERE id=$3
               AND owner IS NULL
             """,
-            (
-                uid,
-                expire,
-                channel_id
-            )
+            uid,
+            expire,
+            channel_id
         )
 
-        if cursor.rowcount == 0:
-
-            await db.rollback()
+        if result == "UPDATE 0":
 
             await call.answer(
                 "❌ Этот канал уже успел занять другой пользователь.",
@@ -1769,35 +1549,53 @@ async def choose_duration(call: CallbackQuery):
 
             return
 
-        await db.commit()
-
-        cursor = await db.execute(
+        ch = await db.fetchrow(
             """
-            SELECT
-                band,
-                channel,
-                frequency,
-                expires_at
+            SELECT band, channel,
+                   frequency, expires_at
             FROM channels
-            WHERE id=?
+            WHERE id=$1
             """,
-            (channel_id,)
+            channel_id
         )
 
-        ch = await cursor.fetchone()
+        user = await db.fetchrow(
+            """
+            SELECT callsign
+            FROM users
+            WHERE id=$1
+            """,
+            uid
+        )
 
-    # -----------------------------------------------------
-    # Подтверждение
-    # -----------------------------------------------------
+    callsign = (
+        user["callsign"]
+        if user
+        else "неизвестен"
+    )
+
+    if minutes < 60:
+
+        duration_text = f"{minutes} минут"
+
+    else:
+
+        hours = minutes // 60
+
+        if hours == 1:
+            duration_text = "1 час"
+        else:
+            duration_text = f"{hours} часа"
 
     await call.message.answer(
         "✅ Канал успешно занят!\n\n"
-        f"📡 Диапазон: {ch[0]}\n"
-        f"🎯 Канал: {ch[1]}\n"
-        f"📶 Частота: {ch[2]} MHz\n"
+        f"📡 Диапазон: {ch['band']}\n"
+        f"🎯 Канал: {ch['channel']}\n"
+        f"📶 Частота: {ch['frequency']} MHz\n"
         f"👤 Позывной: {callsign}\n"
-        f"⏳ Срок: {duration_text(minutes)}\n"
-        f"⏱ Осталось: {format_time_left(ch[3])}"
+        f"⏳ Срок: {duration_text}\n"
+        f"⏱ Осталось: "
+        f"{format_time_left(ch['expires_at'])}"
     )
 
     await call.answer(
@@ -1814,11 +1612,20 @@ async def my_channel(call: CallbackQuery):
 
     uid = call.from_user.id
 
+    if not await is_approved(uid):
+
+        await call.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+
+        return
+
     await release_expired_channels()
 
-    async with aiosqlite.connect(DB) as db:
+    async with DB_POOL.acquire() as db:
 
-        cursor = await db.execute(
+        row = await db.fetchrow(
             """
             SELECT
                 channels.band,
@@ -1828,13 +1635,11 @@ async def my_channel(call: CallbackQuery):
                 users.callsign
             FROM channels
             LEFT JOIN users
-                ON channels.owner = users.id
-            WHERE channels.owner=?
+                ON channels.owner=users.id
+            WHERE channels.owner=$1
             """,
-            (uid,)
+            uid
         )
-
-        row = await cursor.fetchone()
 
     if not row:
 
@@ -1845,18 +1650,6 @@ async def my_channel(call: CallbackQuery):
         await call.answer()
 
         return
-
-    (
-        band,
-        channel,
-        frequency,
-        expires_at,
-        callsign
-    ) = row
-
-    timer = format_time_left(
-        expires_at
-    )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1869,7 +1662,7 @@ async def my_channel(call: CallbackQuery):
             [
                 InlineKeyboardButton(
                     text="📡 Частоты",
-                    callback_data=f"band_{band}"
+                    callback_data=f"band_{row['band']}"
                 )
             ],
             [
@@ -1883,11 +1676,12 @@ async def my_channel(call: CallbackQuery):
 
     await call.message.answer(
         "📍 Ваш канал:\n\n"
-        f"📡 Диапазон: {band}\n"
-        f"🎯 Канал: {channel}\n"
-        f"📶 Частота: {frequency} MHz\n"
-        f"👤 Позывной: {callsign or '—'}\n"
-        f"⏳ Осталось: {timer}",
+        f"📡 Диапазон: {row['band']}\n"
+        f"🎯 Канал: {row['channel']}\n"
+        f"📶 Частота: {row['frequency']} MHz\n"
+        f"👤 Позывной: {row['callsign'] or '—'}\n"
+        f"⏳ Осталось: "
+        f"{format_time_left(row['expires_at'])}",
         reply_markup=keyboard
     )
 
@@ -1903,23 +1697,19 @@ async def release_channel(call: CallbackQuery):
 
     uid = call.from_user.id
 
-    async with aiosqlite.connect(DB) as db:
+    async with DB_POOL.acquire() as db:
 
-        cursor = await db.execute(
+        result = await db.execute(
             """
             UPDATE channels
             SET owner=NULL,
                 expires_at=NULL
-            WHERE owner=?
+            WHERE owner=$1
             """,
-            (uid,)
+            uid
         )
 
-        await db.commit()
-
-        released = cursor.rowcount
-
-    if released == 0:
+    if result == "UPDATE 0":
 
         await call.message.answer(
             "❌ У вас нет занятого канала."
@@ -1956,7 +1746,7 @@ async def auto_release():
 
 
 # =========================================================
-# КОМАНДЫ БОТА
+# КОМАНДЫ
 # =========================================================
 
 async def setup_bot_commands():
@@ -1971,24 +1761,8 @@ async def setup_bot_commands():
             description="Открыть меню"
         ),
         BotCommand(
-            command="users",
-            description="Пользователи"
-        ),
-        BotCommand(
-            command="channels",
-            description="Состояние каналов"
-        ),
-        BotCommand(
-            command="approve",
-            description="Одобрить пользователя"
-        ),
-        BotCommand(
-            command="reject",
-            description="Отклонить пользователя"
-        ),
-        BotCommand(
-            command="release",
-            description="Освободить канал пользователя"
+            command="admin",
+            description="Панель администратора"
         )
     ]
 
@@ -2006,7 +1780,7 @@ async def menu_command(message: types.Message):
 
 
 # =========================================================
-# RENDER HEALTH CHECK
+# HEALTH CHECK RENDER
 # =========================================================
 
 async def health(request):
@@ -2022,17 +1796,19 @@ async def health(request):
 
 async def main():
 
+    await connect_db()
+
     await init_db()
+
+    # Пытаемся перенести старую SQLite-базу,
+    # если она ещё существует.
+    await migrate_old_sqlite()
 
     await setup_bot_commands()
 
     asyncio.create_task(
         auto_release()
     )
-
-    # -----------------------------------------------------
-    # Web-сервер для Render
-    # -----------------------------------------------------
 
     app = web.Application()
 
@@ -2041,16 +1817,14 @@ async def main():
         health
     )
 
-    runner = web.AppRunner(
-        app
-    )
+    runner = web.AppRunner(app)
 
     await runner.setup()
 
     port = int(
         os.getenv(
             "PORT",
-            10000
+            "10000"
         )
     )
 
@@ -2070,9 +1844,21 @@ async def main():
         "Bot started"
     )
 
-    await dp.start_polling(
-        bot
-    )
+    try:
+
+        await dp.start_polling(
+            bot
+        )
+
+    finally:
+
+        await bot.session.close()
+
+        if DB_POOL:
+
+            await DB_POOL.close()
+
+        await runner.cleanup()
 
 
 # =========================================================
@@ -2080,5 +1866,4 @@ async def main():
 # =========================================================
 
 if __name__ == "__main__":
-
     asyncio.run(main())
